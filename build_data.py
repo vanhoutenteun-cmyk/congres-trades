@@ -9,8 +9,9 @@ Draait zonder extra pakketten (alleen de standaardbibliotheek van Python 3.9+).
 Instellingen via omgevingsvariabelen:
   FMP_API_KEY    verplicht
   LOOKBACK_DAYS  hoeveel dagen terug trades bewaard worden (standaard 400)
-  MAX_PAGES      max. pagina's per kamer per run (standaard 25, 100 meldingen per pagina)
-  MAX_TICKERS    max. aantal tickers waarvoor koersen worden opgehaald (standaard 300)
+  MAX_PAGES      max. pagina's per kamer per run (standaard 40)
+  PAGE_LIMIT     meldingen per pagina (standaard 25, het maximum van het gratis FMP-abonnement)
+  MAX_TICKERS    max. aantal tickers waarvoor koersen worden opgehaald (standaard 150)
 """
 import json, os, re, sys, time, unicodedata, urllib.request, urllib.error, urllib.parse
 from datetime import date, datetime, timedelta, timezone
@@ -19,8 +20,9 @@ FMP = os.environ.get("FMP_BASE", "https://financialmodelingprep.com/stable")
 LEG = os.environ.get("LEG_BASE", "https://unitedstates.github.io/congress-legislators")
 KEY = os.environ.get("FMP_API_KEY", "").strip()
 LOOKBACK = int(os.environ.get("LOOKBACK_DAYS", "400"))
-MAX_PAGES = int(os.environ.get("MAX_PAGES", "25"))
-MAX_TICKERS = int(os.environ.get("MAX_TICKERS", "300"))
+MAX_PAGES = int(os.environ.get("MAX_PAGES", "40"))
+PAGE_LIMIT = int(os.environ.get("PAGE_LIMIT", "25"))
+MAX_TICKERS = int(os.environ.get("MAX_TICKERS", "150"))
 OUT = os.environ.get("OUT_FILE", "data.json")
 PROFILE_CACHE = os.environ.get("PROFILE_CACHE", "profielen.json")
 TODAY = date.today()
@@ -161,10 +163,16 @@ def match_person(people, first, last, office, kamer, state):
 
 
 # ---------- 2. Meldingen ----------
-def fetch_disclosures(path, kamer):
+def fetch_disclosures(path, kamer, stop_at):
     rows, first_keys = [], None
     for page in range(MAX_PAGES):
-        data = fmp(path, page=page, limit=100)
+        try:
+            data = fmp(path, page=page, limit=PAGE_LIMIT)
+        except RuntimeError as e:
+            if page == 0:
+                raise
+            log(f"{path}: pagina {page} niet beschikbaar, gestopt ({e})")
+            break
         if not isinstance(data, list) or not data:
             break
         if first_keys is None:
@@ -173,7 +181,7 @@ def fetch_disclosures(path, kamer):
         rows += [(kamer, r) for r in data]
         dates = [to_date(pick(r, "disclosureDate", "dateRecieved", "dateReceived")) for r in data]
         dates = [d for d in dates if d]
-        if dates and min(dates) < SINCE:
+        if dates and min(dates) < stop_at:
             break
     log(f"{path}: {len(rows)} meldingen opgehaald")
     return rows
@@ -190,7 +198,13 @@ def build():
             prev = {}
     people, by_id = load_legislators()
 
-    raw = fetch_disclosures("senate-latest", "Senate") + fetch_disclosures("house-latest", "House")
+    # Alleen terugbladeren tot kort voor de vorige run (bespaart API-aanroepen)
+    prev_mels = [t.get("meldingsdatum") for t in prev.get("trades", []) if t.get("meldingsdatum")]
+    stop_at = SINCE
+    if prev_mels:
+        stop_at = max(SINCE, (date.fromisoformat(max(prev_mels)) - timedelta(days=10)).isoformat())
+    log(f"Meldingen ophalen tot {stop_at}")
+    raw = fetch_disclosures("senate-latest", "Senate", stop_at) + fetch_disclosures("house-latest", "House", stop_at)
     politici = {p["id"]: p for p in prev.get("politici", [])}
     trades = {}
     for t in prev.get("trades", []):  # eerdere runs behouden
@@ -251,13 +265,17 @@ def build():
     json.dump(cache, open(PROFILE_CACHE, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
 
     # ---------- 4. Koersen ----------
-    hist = {}
+    # Vorige koersen behouden; nieuwe aanvullen. Mislukt een ticker, dan blijft de oude reeks staan.
+    hist = {k: v for k, v in (prev.get("koershistorie") or {}).items() if any(t["ticker"] == k for t in trades)}
     first_needed = {}
     for t in trades:
         first_needed[t["ticker"]] = min(first_needed.get(t["ticker"], "9999"), t["transactiedatum"])
     price_fail = 0
     for tk in tickers:
         frm = (date.fromisoformat(first_needed[tk]) - timedelta(days=40)).isoformat()
+        old = hist.get(tk) or []
+        if old and old[0]["datum"] <= frm:
+            frm = (date.fromisoformat(old[-1]["datum"]) - timedelta(days=5)).isoformat()
         try:
             d = fmp("historical-price-eod/light", symbol=tk, **{"from": frm, "to": TODAY.isoformat()})
             if isinstance(d, dict):
@@ -268,9 +286,10 @@ def build():
                 dt = to_date(pick(x, "date"))
                 if c and dt:
                     pts.append({"datum": dt, "slotkoers": round(float(c), 4)})
-            pts.sort(key=lambda p: p["datum"])
-            if pts:
-                hist[tk] = pts
+            merged = {p["datum"]: p for p in old}
+            merged.update({p["datum"]: p for p in pts})
+            if merged:
+                hist[tk] = [merged[k] for k in sorted(merged)]
         except Exception as e:
             price_fail += 1
             if price_fail <= 3:
