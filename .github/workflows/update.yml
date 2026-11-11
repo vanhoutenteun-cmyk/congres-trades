@@ -2,8 +2,8 @@ name: Data bijwerken
 
 on:
   schedule:
-    - cron: "17 7 * * *"   # elke dag om 07:17 UTC (08:17 Nederlandse wintertijd)
-  workflow_dispatch:        # knop "Run workflow" om handmatig te starten
+    - cron: "17 7 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
