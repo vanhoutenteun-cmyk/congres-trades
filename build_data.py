@@ -327,8 +327,15 @@ def build():
 
     raw = fetch_disclosures("senate-latest", "Senate") + fetch_disclosures("house-latest", "House")
     politici, trades, skipped = {}, {}, 0
+    by_bio = {p["id"]: p for p in people if p.get("id")}
     for kamer, r in raw:
         ticker = str(pick(r, "symbol", "ticker") or "").strip().upper()
+        if not ticker:  # FMP laat 'symbol' soms leeg terwijl de ticker tussen haakjes in de omschrijving staat
+            m = re.search(r"\(([A-Z]{1,5}(?:[.\-][A-Z])?)\)\s*$", str(pick(r, "assetDescription") or ""))
+            ticker = m.group(1) if m else ""
+        if "option" in str(pick(r, "assetType") or "").lower():
+            skipped += 1  # opties: koersrendement van het aandeel zegt weinig over een optie
+            continue
         typ = trade_type(pick(r, "type", "transactionType"))
         tx = to_date(pick(r, "transactionDate"))
         mel = to_date(pick(r, "disclosureDate", "dateRecieved", "dateReceived"))
@@ -339,13 +346,14 @@ def build():
         office = pick(r, "office", "representative", "senator")
         district = str(pick(r, "district") or "")
         state = district[:2].upper() if re.match(r"[A-Za-z]{2}", district) else ""
-        p = match_person(people, first, last, office, kamer, state)
+        bio = str(pick(r, "senateID", "bioguideId") or "").strip()
+        p = by_bio.get(bio) or match_person(people, first, last, office, kamer, state)
         if p:
             pid = p["id"]
             politici[pid] = {k: v for k, v in p.items() if not k.startswith("_")}
         else:
             name = " ".join(x for x in [first, last] if x) or office or "Onbekend"
-            pid = "x-" + "-".join(norm(name)) + "-" + kamer.lower()
+            pid = bio or ("x-" + "-".join(norm(name)) + "-" + kamer.lower())
             politici.setdefault(pid, {"id": pid, "naam": name, "partij": "–", "kamer": kamer,
                                       "staat": state, "commissies": []})
         amount = pick(r, "amount") or "–"
