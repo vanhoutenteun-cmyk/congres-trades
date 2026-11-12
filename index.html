@@ -236,6 +236,7 @@ const S = {
   },
   f: {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'},
   polDetail: null,
+  lim: {},
   sigFilter: '',
   secPeriod: '365',
   watch: store.get('ct.watch', {pol:[], tic:[]}),
@@ -355,7 +356,7 @@ function closeOn(arr, date){
   return arr[lo].c;
 }
 function prepare(raw){
-  const normH = a => (Array.isArray(a) ? a : []).map(x => ({d:String(x && x.datum || '').slice(0, 10), c:num(x && x.slotkoers)}))
+  const normH = a => (Array.isArray(a) ? a : []).map(x => Array.isArray(x) ? ({d:String(x[0] || '').slice(0, 10), c:num(x[1])}) : ({d:String(x && x.datum || '').slice(0, 10), c:num(x && x.slotkoers)}))
     .filter(x => x.d && x.c).sort((a, b) => a.d < b.d ? -1 : a.d > b.d ? 1 : 0);
   const hist = {};
   const kh = raw.koershistorie || {};
@@ -389,7 +390,7 @@ function prepare(raw){
   });
   let ref = raw.laatst_bijgewerkt ? String(raw.laatst_bijgewerkt).slice(0, 10) : null;
   if (!ref || isNaN(toD(ref))) ref = trades.reduce((m, t) => t.mel && t.mel > m ? t.mel : m, '') || iso(new Date());
-  return {updated:raw.laatst_bijgewerkt || null, ref, pols, polById, trades, hist};
+  return {updated:raw.laatst_bijgewerkt || null, ref, pols, polById, trades, hist, normH, histDir:raw.koershistorie_map || null, histTried:new Set()};
 }
 
 /* ---------- sorting ---------- */
@@ -421,7 +422,9 @@ const sigPills = s => s.length ? `<div class="pills">${s.map(x => `<span class="
 function tradeTable(rows, key, opts){
   opts = opts || {};
   if (!rows.length) return `<div class="tablewrap"><div class="empty">${esc(opts.empty || 'Geen trades gevonden.')}</div></div>`;
-  const sorted = sortRows(rows, S.sort[key]);
+  const all = sortRows(rows, S.sort[key]);
+  const lim = S.lim[key] || 250;
+  const sorted = all.slice(0, lim);
   const head = (opts.hidePol ? '' : th('Politicus', key, 'polName')) + th('Koop/verkoop', key, 'type') + th('Ticker', key, 'ticker') +
     th('Sector', key, 'sector') + th('Bedragrange', key, 'rangeV') + th('Transactiedatum', key, 'tx') +
     th('% sinds transactie', key, 'rT', 1) + th('% sinds melding', key, 'rM', 1);
@@ -433,7 +436,8 @@ function tradeTable(rows, key, opts){
     <td class="small">${esc(t.range)}</td>
     <td>${fmtDate(t.tx)}<div class="small muted">gemeld ${fmtDate(t.mel)}${t.delay != null ? ` (${t.delay} d)` : ''}</div></td>
     <td class="r">${pctCell(t.rT)}</td><td class="r">${pctCell(t.rM)}</td></tr>`).join('');
-  return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  const more = all.length > lim ? `<div class="rowbar" style="margin-top:10px"><span class="small muted">${lim} van ${all.length} getoond</span><button class="btn" type="button" data-more="${key}">Toon meer</button></div>` : '';
+  return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${more}`;
 }
 
 function note(extra){
@@ -721,7 +725,7 @@ function openTrade(id){
       <div class="small muted">${typePill(t.type)} ${esc(t.polName)} · ${esc(t.range)} · ${esc(t.sector)}</div>${sigPills(t.sig)}</div>
       <button class="iconbtn" type="button" data-close aria-label="Sluiten">${ICON.close}</button></div>
     <div class="dlg-b">
-      <div class="chart">${chartSvg(t)}</div>
+      <div class="chart" id="chartBox">${needsLoad(t) ? '<div class="empty">Koersgrafiek laden…</div>' : chartSvg(t)}</div>
       <div class="legend" style="margin:6px 0 14px"><span><i style="background:var(--accent)"></i>${esc(t.ticker)}</span><span>0% = slotkoers op de transactiedatum</span></div>
       <div class="kv">
         ${kv('Transactie', fmtDate(t.tx))}${kv('Melding', fmtDate(t.mel) + (t.delay != null ? ` <span class="small muted">(${t.delay} d)</span>` : ''))}
@@ -732,6 +736,21 @@ function openTrade(id){
       <p class="small muted" style="margin:14px 0 0">Koersrendement van het aandeel, niet het resultaat van de politicus. Transactiekoers = slotkoers op de transactiedag. Geen beleggingsadvies.</p>
     </div>`;
   if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); } else dlg.setAttribute('open', '');
+  dlg.dataset.trade = String(id);
+  if (needsLoad(t)) loadHist(t.ticker).then(() => {
+    const box = $('#chartBox');
+    if (box && dlg.open && dlg.dataset.trade === String(id)) box.innerHTML = chartSvg(t);
+  });
+}
+function needsLoad(t){ return D.histDir && !D.hist[t.ticker] && !D.histTried.has(t.ticker); }
+async function loadHist(tk){
+  D.histTried.add(tk);
+  try {
+    const file = tk.toUpperCase().replace(/[^A-Z0-9.\-]/g, '_');
+    const res = await fetch(D.histDir + encodeURIComponent(file) + '.json?t=' + encodeURIComponent(D.updated || Date.now()));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    D.hist[tk] = D.normH(await res.json());
+  } catch (e) { /* geen koersbestand: grafiek toont melding */ }
 }
 $('#dlg').addEventListener('click', e => {
   if (e.target.closest('[data-close]') || e.target === e.currentTarget) e.currentTarget.close ? e.currentTarget.close() : e.currentTarget.removeAttribute('open');
@@ -764,6 +783,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('[data-reset]')) { S.f = {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'}; renderFilters(); renderTrades(); return; }
   if (e.target.closest('[data-back]')) { S.polDetail = null; render(); return; }
   const sp = e.target.closest('[data-secp]'); if (sp) { S.secPeriod = sp.dataset.secp; render(); return; }
+  const mo = e.target.closest('[data-more]'); if (mo) { const k = mo.dataset.more; S.lim[k] = (S.lim[k] || 250) + 250; if (S.tab === 'trades') renderTrades(); else render(); return; }
   const sg = e.target.closest('[data-sig]'); if (sg) { S.sigFilter = sg.dataset.sig; render(); return; }
   const tr = e.target.closest('[data-trade]'); if (tr && !e.target.closest('dialog')) { openTrade(+tr.dataset.trade); return; }
   const pr = e.target.closest('[data-pol]');
