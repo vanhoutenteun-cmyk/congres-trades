@@ -116,6 +116,82 @@ def lower_bound(amount):
     return int(re.sub(r"[,\.]", "", m.group(0))) if m else None
 
 
+# ---------- Koersbronnen ----------
+YAHOO = os.environ.get("YAHOO_BASE", "https://query1.finance.yahoo.com/v8/finance/chart")
+STOOQ = os.environ.get("STOOQ_BASE", "https://stooq.com/q/d/l/")
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+
+def prices_fmp(tk, frm):
+    d = fmp("historical-price-eod/light", symbol=tk, **{"from": frm, "to": TODAY.isoformat()})
+    if isinstance(d, dict):
+        d = d.get("historical", [])
+    pts = []
+    for x in d or []:
+        c = pick(x, "price", "close", "adjClose")
+        dt = to_date(pick(x, "date"))
+        if c and dt:
+            pts.append({"datum": dt, "slotkoers": round(float(c), 4)})
+    return pts
+
+
+def http_text(url):
+    global CALLS
+    CALLS += 1
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def prices_yahoo(tk, frm):
+    """Onofficiële Yahoo Finance-grafiekdata. Alleen voor persoonlijk gebruik."""
+    p1 = int(datetime.combine(date.fromisoformat(frm), datetime.min.time(), tzinfo=timezone.utc).timestamp())
+    p2 = int(datetime.now(timezone.utc).timestamp()) + 86400
+    sym = tk.replace(".", "-")
+    url = f"{YAHOO}/{urllib.parse.quote(sym)}?period1={p1}&period2={p2}&interval=1d&events=history"
+    for i in range(3):
+        try:
+            data = json.loads(http_text(url))
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and i < 2:
+                time.sleep(5 * (i + 1))
+                continue
+            raise RuntimeError(f"HTTP {e.code}")
+    res = ((data.get("chart") or {}).get("result") or [None])[0]
+    if not res:
+        raise RuntimeError(str((data.get("chart") or {}).get("error") or "geen resultaat")[:120])
+    off = (res.get("meta") or {}).get("gmtoffset") or 0
+    closes = (((res.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
+    pts = []
+    for ts, c in zip(res.get("timestamp") or [], closes):
+        if c:
+            dt = datetime.fromtimestamp(ts + off, timezone.utc).date().isoformat()
+            pts.append({"datum": dt, "slotkoers": round(float(c), 4)})
+    time.sleep(0.4)
+    return pts
+
+
+def prices_stooq(tk, frm):
+    sym = tk.lower().replace(".", "-") + ".us"
+    url = f"{STOOQ}?s={urllib.parse.quote(sym)}&d1={frm.replace('-', '')}&d2={TODAY.strftime('%Y%m%d')}&i=d"
+    txt = http_text(url).strip()
+    lines = txt.splitlines()
+    if not lines or not lines[0].lower().startswith("date"):
+        raise RuntimeError("geen CSV: " + (lines[0][:80] if lines else "leeg"))
+    head = [h.strip().lower() for h in lines[0].split(",")]
+    di, ci = head.index("date"), head.index("close")
+    pts = []
+    for ln in lines[1:]:
+        f = ln.split(",")
+        try:
+            pts.append({"datum": f[di][:10], "slotkoers": round(float(f[ci]), 4)})
+        except (ValueError, IndexError):
+            pass
+    time.sleep(0.4)
+    return pts
+
+
 # ---------- 1. Congresleden en commissies ----------
 def load_legislators():
     try:
@@ -270,31 +346,38 @@ def build():
     first_needed = {}
     for t in trades:
         first_needed[t["ticker"]] = min(first_needed.get(t["ticker"], "9999"), t["transactiedatum"])
+    src_count = {}
     price_fail = 0
     for tk in tickers:
         frm = (date.fromisoformat(first_needed[tk]) - timedelta(days=40)).isoformat()
         old = hist.get(tk) or []
         if old and old[0]["datum"] <= frm:
             frm = (date.fromisoformat(old[-1]["datum"]) - timedelta(days=5)).isoformat()
-        try:
-            d = fmp("historical-price-eod/light", symbol=tk, **{"from": frm, "to": TODAY.isoformat()})
-            if isinstance(d, dict):
-                d = d.get("historical", [])
-            pts = []
-            for x in d or []:
-                c = pick(x, "price", "close", "adjClose")
-                dt = to_date(pick(x, "date"))
-                if c and dt:
-                    pts.append({"datum": dt, "slotkoers": round(float(c), 4)})
-            merged = {p["datum"]: p for p in old}
-            merged.update({p["datum"]: p for p in pts})
-            if merged:
-                hist[tk] = [merged[k] for k in sorted(merged)]
-        except Exception as e:
+        pts, errors = [], []
+        sources = [("FMP", prices_fmp), ("Yahoo", prices_yahoo), ("Stooq", prices_stooq)]
+        if cache.get(tk, {}).get("fmp_koers") is False:
+            sources = sources[1:]  # FMP gaf eerder 'niet in je abonnement' voor deze ticker
+        for name, fn in sources:
+            try:
+                pts = fn(tk, frm)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+                if name == "FMP" and "not available under your current subscription" in str(e):
+                    cache.setdefault(tk, {})["fmp_koers"] = False
+                pts = []
+            if pts:
+                src_count[name] = src_count.get(name, 0) + 1
+                break
+        merged = {p["datum"]: p for p in old}
+        merged.update({p["datum"]: p for p in pts})
+        if merged:
+            hist[tk] = [merged[k] for k in sorted(merged)]
+        if not pts:
             price_fail += 1
-            if price_fail <= 3:
-                log("Koersen mislukt", tk, e)
-    log(f"Koersen voor {len(hist)} van {len(tickers)} tickers ({price_fail} mislukt)")
+            if price_fail <= 5:
+                log("Koersen mislukt", tk, " | ".join(e[:160] for e in errors) or "geen data")
+    json.dump(cache, open(PROFILE_CACHE, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+    log(f"Koersen voor {len(hist)} van {len(tickers)} tickers; bronnen deze run: {src_count or 'geen'}; {price_fail} zonder nieuwe koersen")
 
     def close_on(tk, d):
         best = None
