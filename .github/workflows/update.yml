@@ -2,40 +2,48 @@ name: Data bijwerken
 
 on:
   schedule:
-    - cron: "17 7 * * *"
+    - cron: "17 7 * * *"   # elke dag om 07:17 UTC (08:17 Nederlandse wintertijd)
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["index.html", "build_data.py", ".github/workflows/update.yml"]
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
-  group: data-bijwerken
+  group: pages
   cancel-in-progress: false
 
 jobs:
-  update:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: data.json bouwen
+      - name: Site bouwen
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          PREV_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: python build_data.py
 
-      - name: Wijzigingen opslaan
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data.json profielen.json
-          if git diff --cached --quiet; then
-            echo "Geen wijzigingen."
-          else
-            git commit -m "Data bijgewerkt $(date -u +%Y-%m-%d)"
-            git push
-          fi
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
