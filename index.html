@@ -426,7 +426,7 @@ function tradeTable(rows, key, opts){
     th('Sector', key, 'sector') + th('Bedragrange', key, 'rangeV') + th('Transactiedatum', key, 'tx') +
     th('% sinds transactie', key, 'rT', 1) + th('% sinds melding', key, 'rM', 1);
   const body = sorted.map(t => `<tr class="click" tabindex="0" data-trade="${t.id}" aria-label="Koersgrafiek ${esc(t.ticker)}, ${esc(t.polName)}">
-    ${opts.hidePol ? '' : `<td><div>${esc(t.polName)}</div><div class="small muted">${esc(t.partij)}${t.pol && t.pol.staat ? '-' + esc(t.pol.staat) : ''} · ${esc(kamerNl(t.kamer))}</div>${sigPills(t.sig)}</td>`}
+    ${opts.hidePol ? '' : `<td><div>${esc(t.polName)}</div><div class="small muted">${esc([t.partij && t.partij !== '–' ? t.partij : '', t.pol && t.pol.staat].filter(Boolean).join('-'))}${(t.partij && t.partij !== '–') || (t.pol && t.pol.staat) ? ' · ' : ''}${esc(kamerNl(t.kamer))}</div>${sigPills(t.sig)}</td>`}
     <td>${typePill(t.type)}${opts.hidePol ? sigPills(t.sig) : ''}</td>
     <td><span class="tick">${esc(t.ticker)}</span> ${starBtn('tic', t.ticker, t.ticker)}<div class="small muted">${esc(t.bedrijf)}</div></td>
     <td>${esc(t.sector)}</td>
@@ -467,7 +467,7 @@ function polTable(stats, key){
     th('Gem. rendement sinds melding', key, 'avg', 1) + '<th>Favoriete sectoren</th><th>Commissies</th>' + th('Frequentie', key, 'freq', 1);
   const body = sorted.map(s => `<tr class="click" tabindex="0" data-pol="${esc(s.id)}" aria-label="Details ${esc(s.name)}">
     <td style="width:44px">${starBtn('pol', s.id, s.name)}</td>
-    <td><div><b>${esc(s.name)}</b></div><div class="small muted">${esc(s.partij)}${s.p.staat ? '-' + esc(s.p.staat) : ''} · ${esc(kamerNl(s.kamer))}</div></td>
+    <td><div><b>${esc(s.name)}</b></div><div class="small muted">${esc([s.partij && s.partij !== '–' ? s.partij : '', s.p.staat].filter(Boolean).join('-'))}${(s.partij && s.partij !== '–') || s.p.staat ? ' · ' : ''}${esc(kamerNl(s.kamer))}</div></td>
     <td class="r">${s.n}</td>
     <td class="r">${s.win == null ? '<span class="na">–</span>' : `${fmtNum(s.win, 0)}%<div class="small muted">van ${s.winN}</div>`}</td>
     <td class="r">${pctCell(s.avg)}</td>
