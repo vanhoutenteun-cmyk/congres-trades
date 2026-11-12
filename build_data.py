@@ -346,6 +346,11 @@ def build():
         t["koers_transactie"] = close_on(tk, t["transactiedatum"])
         t["koers_melding"] = close_on(tk, t["meldingsdatum"]) if t["meldingsdatum"] else None
         t["koers_nu"] = hist[tk][-1][1] if hist.get(tk) else None
+        # Track record: koers 1/3/6/12 maanden na de melding (alleen als die datum al voorbij is)
+        last = hist[tk][-1][0] if hist.get(tk) else None
+        for label, days in (("1m", 30), ("3m", 91), ("6m", 182), ("12m", 365)):
+            target = (date.fromisoformat(t["meldingsdatum"]) + timedelta(days=days)).isoformat() if t["meldingsdatum"] else None
+            t["koers_" + label] = close_on(tk, target) if target and last and target <= last else None
 
     # ---------- 5. Signalen ----------
     by_tk = {}

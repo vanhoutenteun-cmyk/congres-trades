@@ -206,6 +206,9 @@ const store = {
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
 };
 const KAMER = {House:'Huis', Senate:'Senaat'};
+const HZ_DAYS = {'1m':30, '3m':91, '6m':182, '12m':365};
+const HZ_LABEL = {m:'sinds melding', '1m':'na 1 maand', '3m':'na 3 maanden', '6m':'na 6 maanden', '12m':'na 12 maanden'};
+const median = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const kamerNl = k => KAMER[k] || k || '–';
 
 const ICON = {
@@ -236,6 +239,7 @@ const S = {
   },
   f: {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'},
   polDetail: null,
+  hz: 'm', trType: 'all', minN: true,
   lim: {},
   sigFilter: '',
   secPeriod: '365',
@@ -378,13 +382,21 @@ function prepare(raw){
     const rT = pct(pT, pN), rM = pct(pM, pN);
     const type = String(t.type || '').toLowerCase().startsWith('v') ? 'verkoop' : 'koop';
     const dir = rM == null ? null : (type === 'koop' ? rM : -rM);
+    const hz = {m:rM}, hd = {};
+    const lastH = H && H.length ? H[H.length - 1].d : null;
+    Object.entries(HZ_DAYS).forEach(([k, days]) => {
+      let v = num(t['koers_' + k]);
+      if (v == null && H && mel && lastH) { const target = addDays(mel, days); if (target <= lastH) v = closeOn(H, target); }
+      hz[k] = pct(pM, v);
+    });
+    Object.keys(hz).forEach(k => { hd[k] = hz[k] == null ? null : (type === 'koop' ? hz[k] : -hz[k]); });
     const rangeTxt = t.bedrag_range || '–';
     const m = String(rangeTxt).match(/\d[\d.,]*/);
     return {
       id:i, pid:String(t.politicus_id), pol:p, polName:p ? p.naam : 'Onbekend (' + esc(t.politicus_id) + ')',
       partij:p ? p.partij : '', kamer:p ? p.kamer : '', type, ticker, bedrijf:t.bedrijf || '', sector:t.sector || 'Onbekend',
       range:rangeTxt, rangeV:m ? parseInt(m[0].replace(/[.,]/g, ''), 10) : null, tx, mel,
-      delay:tx && mel ? daysBetween(tx, mel) : null, pT, pM, pN, rT, rM, dir,
+      delay:tx && mel ? daysBetween(tx, mel) : null, pT, pM, pN, rT, rM, dir, hz, hd,
       sig:Array.isArray(t.signalen) ? t.signalen : []
     };
   });
@@ -450,37 +462,45 @@ function note(extra){
     <li>Dit is geen beleggingsadvies.</li></ul></aside>`;
 }
 
+function hzCalc(ts, hz){
+  const vals = ts.filter(t => S.trType === 'all' || t.type === S.trType).map(t => t.hd[hz]).filter(v => v != null);
+  return {n:vals.length, win:vals.length ? vals.filter(v => v > 0).length / vals.length * 100 : null, avg:mean(vals), med:median(vals)};
+}
 function polStats(p){
   const ts = D.trades.filter(t => t.pid === p.id);
-  const withDir = ts.filter(t => t.dir != null);
+  const c = hzCalc(ts, S.hz);
   const sec = {}; ts.forEach(t => { sec[t.sector] = (sec[t.sector] || 0) + 1; });
   const fav = Object.entries(sec).sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]);
   const first = ts.reduce((m, t) => t.tx && (!m || t.tx < m) ? t.tx : m, null);
   const months = first ? Math.max(daysBetween(first, D.ref) / 30.44, 1) : null;
   return {
     p, id:p.id, name:p.naam, kamer:p.kamer, partij:p.partij, trades:ts, n:ts.length,
-    win:withDir.length ? withDir.filter(t => t.dir > 0).length / withDir.length * 100 : null,
-    winN:withDir.length, avg:mean(withDir.map(t => t.dir)), fav, freq:months ? ts.length / months : null,
+    win:c.win, winN:c.n, avg:c.avg, med:c.med, fav, freq:months ? ts.length / months : null,
     last:ts.reduce((m, t) => t.mel && (!m || t.mel > m) ? t.mel : m, null)
   };
 }
 function polTable(stats, key){
   if (!stats.length) return '<div class="tablewrap"><div class="empty">Geen politici.</div></div>';
   const sorted = sortRows(stats, S.sort[key]);
-  const head = '<th><span class="sr-only"></span></th>' + th('Politicus', key, 'name') + th('Trades', key, 'n', 1) + th('Winstpercentage', key, 'win', 1) +
-    th('Gem. rendement sinds melding', key, 'avg', 1) + '<th>Favoriete sectoren</th><th>Commissies</th>' + th('Frequentie', key, 'freq', 1);
+  const head = '<th><span class="sr-only"></span></th>' + th('Politicus', key, 'name') + th('Trades', key, 'n', 1) + th('Goede kant op', key, 'win', 1) +
+    th('Gemiddeld', key, 'avg', 1) + th('Mediaan', key, 'med', 1) + '<th>Favoriete sectoren</th><th>Commissies</th>' + th('Frequentie', key, 'freq', 1);
   const body = sorted.map(s => `<tr class="click" tabindex="0" data-pol="${esc(s.id)}" aria-label="Details ${esc(s.name)}">
     <td style="width:44px">${starBtn('pol', s.id, s.name)}</td>
     <td><div><b>${esc(s.name)}</b></div><div class="small muted">${esc([s.partij && s.partij !== '–' ? s.partij : '', s.p.staat].filter(Boolean).join('-'))}${(s.partij && s.partij !== '–') || s.p.staat ? ' · ' : ''}${esc(kamerNl(s.kamer))}</div></td>
     <td class="r">${s.n}</td>
     <td class="r">${s.win == null ? '<span class="na">–</span>' : `${fmtNum(s.win, 0)}%<div class="small muted">van ${s.winN}</div>`}</td>
     <td class="r">${pctCell(s.avg)}</td>
+    <td class="r">${pctCell(s.med)}</td>
     <td><div class="pills">${s.fav.map(x => `<span class="pill">${esc(x)}</span>`).join('') || '<span class="na">–</span>'}</div></td>
     <td class="small">${s.p.commissies.map(esc).join(', ') || '–'}</td>
     <td class="r">${s.freq == null ? '–' : fmtNum(s.freq, 1) + ' / mnd'}</td></tr>`).join('');
   return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
-const WIN_NOTE = '<li>Winstpercentage: het aandeel trades dat sinds de melding de goede kant op ging. Bij een koop betekent dat: de koers steeg; bij een verkoop: de koers daalde. Het gemiddelde rendement gebruikt dezelfde richting (bij verkopen telt een koersdaling als plus). Trades zonder bekende koers tellen niet mee.</li>';
+const WIN_NOTE = '<li>Track record: gemeten vanaf de <strong>meldingsdatum</strong>, want pas dan kon je de trade zien. “Goede kant op”: bij een koop steeg de koers, bij een verkoop daalde hij. Gemiddelde en mediaan gebruiken dezelfde richting. Horizonnen die nog niet voorbij zijn en trades zonder koers tellen niet mee; het getal eronder is het aantal trades waarop het cijfer rust.</li><li>Let op: aandelen stijgen op lange termijn vaker dan ze dalen, dus bij kopen ligt “goede kant op” vanzelf al vaak boven 50%. Kleine aantallen zeggen weinig; een sterk track record kan toeval zijn.</li>';
+function hzControls(){
+  return `<div class="rowbar"><div class="chips" role="group" aria-label="Horizon">${Object.keys(HZ_LABEL).map(k => `<button class="chip" type="button" data-hz="${k}" aria-pressed="${S.hz === k}">${HZ_LABEL[k]}</button>`).join('')}</div>
+    <div class="chips" role="group" aria-label="Soort trades">${[['all', 'Alle trades'], ['koop', 'Alleen kopen'], ['verkoop', 'Alleen verkopen']].map(o => `<button class="chip" type="button" data-trt="${o[0]}" aria-pressed="${S.trType === o[0]}">${o[1]}</button>`).join('')}</div></div>`;
+}
 
 /* ---------- tab: overzicht ---------- */
 function renderOverzicht(){
@@ -575,20 +595,29 @@ function renderPolitici(){
           <div class="muted small">${esc(p.partij)}${p.staat ? ' · ' + esc(p.staat) : ''} · ${esc(kamerNl(p.kamer))}</div></div>${starBtn('pol', p.id, p.naam)}</div>
           <div class="kv mt">
             <div><span>Trades</span><b>${s.n}</b></div>
-            <div><span>Winstpercentage</span><b>${s.win == null ? '–' : fmtNum(s.win, 0) + '%'}</b></div>
-            <div><span>Gem. rendement sinds melding</span><b class="${cls(s.avg)}">${fmtPct(s.avg)}</b></div>
+            <div><span>Kopen / verkopen</span><b>${s.trades.filter(t => t.type === 'koop').length} / ${s.trades.filter(t => t.type === 'verkoop').length}</b></div>
             <div><span>Frequentie</span><b>${s.freq == null ? '–' : fmtNum(s.freq, 1) + ' / mnd'}</b></div>
+            <div><span>Laatste melding</span><b>${fmtDate(s.last)}</b></div>
           </div>
           <div class="mt small"><span class="muted">Commissies:</span> <div class="pills">${p.commissies.map(c => `<span class="pill">${esc(c)}</span>`).join('') || '–'}</div></div>
           <div class="mt small"><span class="muted">Favoriete sectoren:</span> <div class="pills">${s.fav.map(c => `<span class="pill">${esc(c)}</span>`).join('') || '–'}</div></div>
         </div>
+        <h3 class="mt">Track record</h3>
+        <div class="chips" role="group" aria-label="Soort trades" style="margin-bottom:10px">${[['all', 'Alle trades'], ['koop', 'Alleen kopen'], ['verkoop', 'Alleen verkopen']].map(o => `<button class="chip" type="button" data-trt="${o[0]}" aria-pressed="${S.trType === o[0]}">${o[1]}</button>`).join('')}</div>
+        <div class="tablewrap"><table style="min-width:520px"><thead><tr><th>Horizon (vanaf melding)</th><th class="r">Goede kant op</th><th class="r">Gemiddeld</th><th class="r">Mediaan</th><th class="r">Aantal trades</th></tr></thead><tbody>
+        ${Object.keys(HZ_LABEL).map(k => { const c = hzCalc(s.trades, k); return `<tr><td>${HZ_LABEL[k]}</td><td class="r">${c.win == null ? '<span class="na">–</span>' : fmtNum(c.win, 0) + '%'}</td><td class="r">${pctCell(c.avg)}</td><td class="r">${pctCell(c.med)}</td><td class="r">${c.n}</td></tr>`; }).join('')}
+        </tbody></table></div>
         <h3 class="mt">Alle trades (${s.n})</h3>${tradeTable(s.trades, 'detail', {hidePol:true})}${note(WIN_NOTE)}`;
       return;
     }
     S.polDetail = null;
   }
-  const stats = D.pols.map(polStats);
-  el.innerHTML = `<h2>Politici</h2><p class="small muted" style="margin:-8px 0 12px">Klik op een politicus voor alle trades. Ster = volgen.</p>${polTable(stats, 'pols')}${note(WIN_NOTE)}`;
+  const all = D.pols.map(polStats);
+  const stats = S.minN ? all.filter(s => s.winN >= 5) : all;
+  el.innerHTML = `<h2>Politici</h2><p class="small muted" style="margin:-8px 0 12px">Track record per politicus. Klik op een naam voor details en alle trades. Ster = volgen.</p>
+    ${hzControls()}
+    <label class="small flex" style="margin:0 0 10px"><input type="checkbox" id="minN" ${S.minN ? 'checked' : ''}> Alleen politici met minstens 5 trades met koersdata voor deze horizon <span class="muted">(${stats.length} van ${all.length})</span></label>
+    ${polTable(stats, 'pols')}${note(WIN_NOTE)}`;
 }
 
 /* ---------- tab: sectoren ---------- */
@@ -783,6 +812,8 @@ document.addEventListener('click', e => {
   if (e.target.closest('[data-reset]')) { S.f = {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'}; renderFilters(); renderTrades(); return; }
   if (e.target.closest('[data-back]')) { S.polDetail = null; render(); return; }
   const sp = e.target.closest('[data-secp]'); if (sp) { S.secPeriod = sp.dataset.secp; render(); return; }
+  const hzb = e.target.closest('[data-hz]'); if (hzb) { S.hz = hzb.dataset.hz; render(); return; }
+  const trb = e.target.closest('[data-trt]'); if (trb) { S.trType = trb.dataset.trt; render(); return; }
   const mo = e.target.closest('[data-more]'); if (mo) { const k = mo.dataset.more; S.lim[k] = (S.lim[k] || 250) + 250; if (S.tab === 'trades') renderTrades(); else render(); return; }
   const sg = e.target.closest('[data-sig]'); if (sg) { S.sigFilter = sg.dataset.sig; render(); return; }
   const tr = e.target.closest('[data-trade]'); if (tr && !e.target.closest('dialog')) { openTrade(+tr.dataset.trade); return; }
@@ -795,6 +826,7 @@ document.addEventListener('keydown', e => {
   if (el.matches && el.matches('tr[data-trade], tr[data-pol], .tile[data-trade]')) { e.preventDefault(); el.click(); }
 });
 document.addEventListener('change', e => {
+  if (e.target.id === 'minN') { S.minN = e.target.checked; render(); return; }
   const f = e.target.closest('[data-filter]'); if (!f) return;
   S.f[f.dataset.filter] = f.value; renderTrades();
 });
