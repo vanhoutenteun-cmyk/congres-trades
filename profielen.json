@@ -1,11 +1,13 @@
 {
 "BBIO": {
 "sector": "Gezondheidszorg",
-"naam": "BridgeBio Pharma, Inc."
+"naam": "BridgeBio Pharma, Inc.",
+"fmp_koers": false
 },
 "WBD": {
 "sector": "Communicatie",
-"naam": "Warner Bros. Discovery, Inc."
+"naam": "Warner Bros. Discovery, Inc.",
+"fmp_koers": false
 },
 "MSFT": {
 "sector": "Technologie",
@@ -13,19 +15,23 @@
 },
 "CMCSA": {
 "sector": "Communicatie",
-"naam": "Comcast Corporation"
+"naam": "Comcast Corporation",
+"fmp_koers": false
 },
 "TLH": {
 "sector": "Financiën",
-"naam": "iShares 10-20 Year Treasury Bond ETF"
+"naam": "iShares 10-20 Year Treasury Bond ETF",
+"fmp_koers": false
 },
 "MDYG": {
 "sector": "Financiën",
-"naam": "State Street SPDR S&P 400 Mid Cap Growth ETF"
+"naam": "State Street SPDR S&P 400 Mid Cap Growth ETF",
+"fmp_koers": false
 },
 "XAR": {
 "sector": "Financiën",
-"naam": "State Street SPDR S&P Aerospace & Defense ETF"
+"naam": "State Street SPDR S&P Aerospace & Defense ETF",
+"fmp_koers": false
 },
 "CSCO": {
 "sector": "Technologie",
@@ -33,7 +39,8 @@
 },
 "AMGN": {
 "sector": "Gezondheidszorg",
-"naam": "Amgen Inc."
+"naam": "Amgen Inc.",
+"fmp_koers": false
 },
 "META": {
 "sector": "Communicatie",
@@ -41,35 +48,43 @@
 },
 "EIX": {
 "sector": "Nutsbedrijven",
-"naam": "Edison International"
+"naam": "Edison International",
+"fmp_koers": false
 },
 "LNT": {
 "sector": "Nutsbedrijven",
-"naam": "Alliant Energy Corporation"
+"naam": "Alliant Energy Corporation",
+"fmp_koers": false
 },
 "CMS": {
 "sector": "Nutsbedrijven",
-"naam": "CMS Energy Corporation"
+"naam": "CMS Energy Corporation",
+"fmp_koers": false
 },
 "IEUR": {
 "sector": "Financiën",
-"naam": "iShares Core MSCI Europe ETF"
+"naam": "iShares Core MSCI Europe ETF",
+"fmp_koers": false
 },
 "ZTS": {
 "sector": "Gezondheidszorg",
-"naam": "Zoetis Inc."
+"naam": "Zoetis Inc.",
+"fmp_koers": false
 },
 "CIEN": {
 "sector": "Technologie",
-"naam": "Ciena Corporation"
+"naam": "Ciena Corporation",
+"fmp_koers": false
 },
 "CF": {
 "sector": "Grondstoffen",
-"naam": "CF Industries Holdings, Inc."
+"naam": "CF Industries Holdings, Inc.",
+"fmp_koers": false
 },
 "ARE": {
 "sector": "Vastgoed",
-"naam": "Alexandria Real Estate Equities, Inc."
+"naam": "Alexandria Real Estate Equities, Inc.",
+"fmp_koers": false
 },
 "AAPL": {
 "sector": "Technologie",
@@ -77,7 +92,8 @@
 },
 "CMG": {
 "sector": "Consument (cyclisch)",
-"naam": "Chipotle Mexican Grill, Inc."
+"naam": "Chipotle Mexican Grill, Inc.",
+"fmp_koers": false
 },
 "SPYG": {
 "sector": "Financiën",
@@ -85,22 +101,32 @@
 },
 "CTVA": {
 "sector": "Grondstoffen",
-"naam": "Corteva, Inc."
+"naam": "Corteva, Inc.",
+"fmp_koers": false
 },
 "XLE": {
 "sector": "Financiën",
-"naam": "State Street Energy Select Sector SPDR ETF"
+"naam": "State Street Energy Select Sector SPDR ETF",
+"fmp_koers": false
 },
 "CINF": {
 "sector": "Financiën",
-"naam": "Cincinnati Financial Corporation"
+"naam": "Cincinnati Financial Corporation",
+"fmp_koers": false
 },
 "LLY": {
 "sector": "Gezondheidszorg",
-"naam": "Eli Lilly and Company"
+"naam": "Eli Lilly and Company",
+"fmp_koers": false
 },
 "ENGQF": {
 "sector": "Nutsbedrijven",
-"naam": "Engie S.A."
+"naam": "Engie S.A.",
+"fmp_koers": false
+},
+"SHW": {
+"sector": "Grondstoffen",
+"naam": "The Sherwin-Williams Company",
+"fmp_koers": false
 }
 }
