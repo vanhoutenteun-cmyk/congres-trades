@@ -343,6 +343,9 @@ function makeSample(){
     if (daysBetween(tr.transactiedatum, tr.meldingsdatum) > 45) tr.signalen.push('late melding');
     const others = trades.filter(o => o !== tr && o.ticker === tr.ticker && o.politicus_id !== tr.politicus_id && Math.abs(daysBetween(o.transactiedatum, tr.transactiedatum)) <= 14);
     if (others.length) tr.signalen.push('cluster');
+    const pol = politici.find(x => x.id === tr.politicus_id);
+    const cm = pol && pol.commissies.find(c => (C2S[c] || []).includes(tr.sector));
+    if (cm) { tr.signalen.push('commissie-match'); tr.commissie_match = cm; }
     delete tr._ri;
   });
   // voorbeeld van een onbekende koers
@@ -397,12 +400,12 @@ function prepare(raw){
       partij:p ? p.partij : '', kamer:p ? p.kamer : '', type, ticker, bedrijf:t.bedrijf || '', sector:t.sector || 'Onbekend',
       range:rangeTxt, rangeV:m ? parseInt(m[0].replace(/[.,]/g, ''), 10) : null, tx, mel,
       delay:tx && mel ? daysBetween(tx, mel) : null, pT, pM, pN, rT, rM, dir, hz, hd,
-      sig:Array.isArray(t.signalen) ? t.signalen : []
+      sig:Array.isArray(t.signalen) ? t.signalen : [], cm:t.commissie_match || null, insMatch:t.insider_match || null
     };
   });
   let ref = raw.laatst_bijgewerkt ? String(raw.laatst_bijgewerkt).slice(0, 10) : null;
   if (!ref || isNaN(toD(ref))) ref = trades.reduce((m, t) => t.mel && t.mel > m ? t.mel : m, '') || iso(new Date());
-  return {updated:raw.laatst_bijgewerkt || null, ref, pols, polById, trades, hist, normH, histDir:raw.koershistorie_map || null, histTried:new Set()};
+  return {updated:raw.laatst_bijgewerkt || null, ref, pols, polById, trades, hist, normH, histDir:raw.koershistorie_map || null, histTried:new Set(), insiders:raw.insiders && typeof raw.insiders === 'object' ? raw.insiders : {}};
 }
 
 /* ---------- sorting ---------- */
@@ -534,6 +537,11 @@ function renderOverzicht(){
     <div class="flex between"><div>${typePill(t.type)} <span class="tick">${esc(t.ticker)}</span></div><span class="small ${cls(t.rM)}">${fmtPct(t.rM)} sinds melding</span></div>
     <div class="small muted" style="margin-top:4px">${esc(t.polName)} · gemeld ${fmtDate(t.mel)} · ${esc(t.range)}</div></button></li>`).join('')}</ul>` : '<div class="empty">Nog geen meldingen.</div>';
 
+  const strong = D.trades.filter(t => t.mel && t.mel > addDays(ref, -30) && t.sig.length >= 2)
+    .sort((a, b) => b.sig.length - a.sig.length || (a.mel < b.mel ? 1 : -1)).slice(0, 8);
+  const strongHtml = strong.length ? `<ul class="list">${strong.map(t => `<li><button class="listbtn" type="button" data-trade="${t.id}">
+    <div class="flex between"><div>${typePill(t.type)} <span class="tick">${esc(t.ticker)}</span> <span class="small muted">${esc(t.polName)}</span></div><span class="small muted">gemeld ${fmtDate(t.mel)}</span></div>${sigPills(t.sig)}</button></li>`).join('')}</ul>`
+    : '<div class="empty">Geen meldingen met meerdere signalen in de afgelopen 30 dagen.</div>';
   $('#p-overzicht').innerHTML = `
     <h2>Overzicht</h2>
     <p class="muted small" style="margin:-8px 0 14px">Laatst bijgewerkt: <b>${D.updated ? esc(fmtUpdated(D.updated)) : 'onbekend'}</b></p>
@@ -548,6 +556,7 @@ function renderOverzicht(){
       <div class="card"><h3>Meerdere politici, zelfde aandeel</h3><p class="small muted" style="margin:-6px 0 6px">Transacties in de afgelopen 90 dagen, minstens twee verschillende politici.</p>${clusterHtml}</div>
       <div class="card"><h3>Nieuwste meldingen</h3>${latestHtml}</div>
     </div>
+    <div class="card mt"><h3>Sterkste signalen</h3><p class="small muted" style="margin:-6px 0 6px">Meldingen van de laatste 30 dagen met minstens twee signalen.</p>${strongHtml}</div>
     ${note()}`;
 }
 function fmtUpdated(v){
@@ -686,7 +695,7 @@ function renderOngebruikelijk(){
       ${sigs.map(s => `<button class="chip" type="button" data-sig="${esc(s)}" aria-pressed="${S.sigFilter === s}">${esc(s)} (${all.filter(t => t.sig.includes(s)).length})</button>`).join('')}
     </div><span class="small muted">Standaard: nieuwste melding bovenaan</span></div>
     ${tradeTable(rows, 'unusual', {empty:'Geen trades met signalen.'})}
-    ${note('<li>Signalen komen uit het databestand en zijn aanwijzingen, geen bewijs van iets onrechtmatigs.</li>')}`;
+    ${note(`<li><strong>Wat betekenen de signalen?</strong> Groot bedrag: ondergrens van de bandbreedte vanaf $250.001. Late melding: meer dan 45 dagen na de trade gemeld. Cluster: een andere politicus handelde binnen 14 dagen in hetzelfde aandeel. Commissie-match: de politicus zit in een commissie die over de sector of branche van het bedrijf gaat (grove indeling, controleer zelf). Insider zelfde richting: een bestuurder of grootaandeelhouder van het bedrijf kocht of verkocht binnen 30 dagen hetzelfde kant op (alleen gewone aankopen en verkopen, geen opties of schenkingen).</li><li>Signalen zijn aanwijzingen om verder te kijken, geen bewijs van iets onrechtmatigs.</li>`)}`;
 }
 
 /* ---------- tab: volglijst ---------- */
@@ -762,6 +771,8 @@ function openTrade(id){
         ${kv('Koers nu', t.pN ? '$' + fmtNum(t.pN) : '–')}${kv('% sinds transactie', `<span class="${cls(t.rT)}">${fmtPct(t.rT)}</span>`)}
         ${kv('% sinds melding', `<span class="${cls(t.rM)}">${fmtPct(t.rM)}</span>`)}
       </div>
+      ${t.cm ? `<p class="small" style="margin:14px 0 0"><span class="pill sig">commissie-match</span> ${esc(t.polName)} zit in <b>${esc(t.cm)}</b>. Die commissie raakt aan de sector of branche van dit bedrijf (${esc(t.sector)}).</p>` : ''}
+      ${insiderBlock(t)}
       <p class="small muted" style="margin:14px 0 0">Koersrendement van het aandeel, niet het resultaat van de politicus. Transactiekoers = slotkoers op de transactiedag. Geen beleggingsadvies.</p>
     </div>`;
   if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); } else dlg.setAttribute('open', '');
@@ -770,6 +781,15 @@ function openTrade(id){
     const box = $('#chartBox');
     if (box && dlg.open && dlg.dataset.trade === String(id)) box.innerHTML = chartSvg(t);
   });
+}
+function insiderBlock(t){
+  const rows = (D.insiders[t.ticker] || []).filter(r => r && r.datum && t.tx && Math.abs(daysBetween(t.tx, String(r.datum).slice(0, 10))) <= 90);
+  if (!rows.length) return '';
+  return `<h3 style="margin:16px 0 6px">Insiders bij ${esc(t.ticker)} rond deze trade <span class="small muted" style="font-weight:400">(±90 dagen)</span></h3>
+    <div class="tablewrap"><table style="min-width:520px"><thead><tr><th>Datum</th><th>Naam</th><th>Rol</th><th>Koop/verkoop</th><th class="r">Aantal</th><th class="r">Prijs</th></tr></thead><tbody>
+    ${rows.slice(0, 8).map(r => `<tr><td>${fmtDate(String(r.datum).slice(0, 10))}</td><td>${esc(r.naam)}</td><td class="small">${esc(r.rol || '–')}</td><td>${typePill(r.type === 'verkoop' ? 'verkoop' : 'koop')}</td>
+      <td class="r">${num(r.aantal) ? Math.round(num(r.aantal)).toLocaleString('nl-NL') : '–'}</td><td class="r">${num(r.prijs) ? '$' + fmtNum(num(r.prijs)) : '–'}</td></tr>`).join('')}
+    </tbody></table></div>`;
 }
 function needsLoad(t){ return D.histDir && !D.hist[t.ticker] && !D.histTried.has(t.ticker); }
 async function loadHist(tk){

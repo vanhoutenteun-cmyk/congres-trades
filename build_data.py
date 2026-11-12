@@ -243,6 +243,82 @@ def load_prev_profiles():
     return {}
 
 
+INSIDER_DAYS = int(os.environ.get("INSIDER_DAYS", "365"))
+INSIDER_SINCE = (TODAY - timedelta(days=INSIDER_DAYS)).isoformat()
+INSIDER_WINDOW = int(os.environ.get("INSIDER_WINDOW", "30"))  # dagen rond de transactiedatum
+
+# Commissie -> sectoren / branches. Bewust grof; zie uitleg in het dashboard.
+COMMITTEE_RULES = [
+    (["armed services", "defense"], [], ["aerospace", "defense"]),
+    (["intelligence", "homeland security"], [], ["aerospace", "defense", "software", "communication equipment", "information technology", "computer"]),
+    (["financial services", "banking", "finance"], ["Financiën", "Vastgoed"], []),
+    (["energy", "natural resources", "environment and public works"], ["Energie", "Nutsbedrijven", "Grondstoffen"], []),
+    (["energy and commerce"], ["Gezondheidszorg", "Communicatie"], []),
+    (["health", "veterans", "aging"], ["Gezondheidszorg"], []),
+    (["agriculture"], ["Consument (defensief)", "Grondstoffen"], ["agricultur", "farm", "food", "tobacco"]),
+    (["science, space", "commerce, science"], ["Technologie", "Communicatie"], []),
+    (["transportation", "infrastructure"], [], ["airline", "railroad", "trucking", "auto", "aerospace", "engineering & construction", "marine shipping"]),
+]
+
+
+def committee_match(commissies, sector, industrie):
+    ind = (industrie or "").lower()
+    for c in commissies:
+        cl = c.lower()
+        for keys, sectors, inds in COMMITTEE_RULES:
+            if any(k in cl for k in keys) and (sector in sectors or any(x in ind for x in inds)):
+                return c
+    return None
+
+
+def fetch_insiders(trades):
+    recent = sorted({t["ticker"] for t in trades if (t["meldingsdatum"] or "") >= INSIDER_SINCE})
+    out, fails, logged = {}, 0, False
+    for i, tk in enumerate(recent):
+        try:
+            d = fmp("insider-trading/search", symbol=tk, page=0, limit=100)
+        except Exception as e:
+            fails += 1
+            if fails == 1:
+                log("Insider-data mislukt:", str(e)[:200])
+            if fails == 3 and i == 2:
+                log("Insider-module uitgeschakeld voor deze run (endpoint niet beschikbaar).")
+                return {}
+            continue
+        if isinstance(d, list) and d and not logged:
+            log(f"insider-trading: velden in antwoord: {sorted(d[0].keys())}")
+            logged = True
+        rows = []
+        for x in d if isinstance(d, list) else []:
+            code = str(pick(x, "transactionType") or "").upper()
+            if code.startswith("P"):
+                typ = "koop"
+            elif code.startswith("S"):
+                typ = "verkoop"
+            else:
+                continue  # opties, schenkingen, toekenningen: geen marktaankoop/-verkoop
+            dt = to_date(pick(x, "transactionDate", "filingDate"))
+            if not dt:
+                continue
+            rows.append({"naam": pick(x, "reportingName") or "?", "rol": pick(x, "typeOfOwner") or "",
+                         "type": typ, "datum": dt, "gemeld": to_date(pick(x, "filingDate")),
+                         "aantal": pick(x, "securitiesTransacted"), "prijs": pick(x, "price"), "link": pick(x, "url", "link")})
+        rows.sort(key=lambda r: r["datum"], reverse=True)
+        out[tk] = rows
+        if (i + 1) % 250 == 0:
+            log(f"  insiders: {i + 1}/{len(recent)}")
+    log(f"Insider-trades opgehaald voor {len(out)} van {len(recent)} tickers ({fails} mislukt)")
+    return out
+
+
+def insider_match(t, rows):
+    txd = date.fromisoformat(t["transactiedatum"])
+    hits = [r for r in rows if r["type"] == t["type"] and abs((date.fromisoformat(r["datum"]) - txd).days) <= INSIDER_WINDOW]
+    if not hits:
+        return None
+    return {"aantal": len(hits), "namen": sorted({r["naam"] for r in hits})[:5]}
+
+
 def build():
     if not KEY:
         sys.exit("FMP_API_KEY ontbreekt. Zet hem als repository secret.")
@@ -291,15 +367,16 @@ def build():
     tickers = sorted(count, key=lambda s: -count[s])[:MAX_TICKERS]
     new_prof = 0
     for tk in tickers:
-        if tk in cache and cache[tk].get("sector") is not None:
+        if tk in cache and cache[tk].get("sector") is not None and "industrie" in cache[tk]:
             continue
         try:
             d = fmp("profile", symbol=tk)
             d = d[0] if isinstance(d, list) and d else {}
-            cache[tk] = {"sector": SECTOR_NL.get(d.get("sector"), d.get("sector") or ""), "naam": d.get("companyName")}
+            cache[tk] = {"sector": SECTOR_NL.get(d.get("sector"), d.get("sector") or ""), "naam": d.get("companyName"),
+                         "industrie": d.get("industry") or ""}
             new_prof += 1
         except Exception as e:
-            cache[tk] = {"sector": "", "naam": None}
+            cache[tk] = {"sector": "", "naam": None, "industrie": ""}
     log(f"Profielen: {new_prof} nieuw opgehaald")
 
     # ---------- 4. Koersen ----------
@@ -352,7 +429,10 @@ def build():
             target = (date.fromisoformat(t["meldingsdatum"]) + timedelta(days=days)).isoformat() if t["meldingsdatum"] else None
             t["koers_" + label] = close_on(tk, target) if target and last and target <= last else None
 
-    # ---------- 5. Signalen ----------
+    # ---------- 5. Insider-trades (Form 4) ----------
+    insiders = fetch_insiders(trades)
+
+    # ---------- 6. Signalen ----------
     by_tk = {}
     for t in trades:
         by_tk.setdefault(t["ticker"], []).append(t)
@@ -369,15 +449,26 @@ def build():
         if any(o["politicus_id"] != t["politicus_id"] and abs((date.fromisoformat(o["transactiedatum"]) - txd).days) <= 14
                for o in by_tk[t["ticker"]]):
             s.append("cluster")
+        if t["meldingsdatum"] and t["meldingsdatum"] >= INSIDER_SINCE:
+            ins = insider_match(t, insiders.get(t["ticker"], []))
+            if ins:
+                s.append("insider zelfde richting")
+                t["insider_match"] = ins
+        p = politici.get(t["politicus_id"]) or {}
+        cm = committee_match(p.get("commissies") or [], t["sector"], cache.get(t["ticker"], {}).get("industrie", ""))
+        if cm:
+            s.append("commissie-match")
+            t["commissie_match"] = cm
         t["signalen"] = s
 
-    # ---------- 6. Wegschrijven ----------
+    # ---------- 7. Wegschrijven ----------
     used = {t["politicus_id"] for t in trades}
     out = {
         "laatst_bijgewerkt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "politici": sorted([p for k, p in politici.items() if k in used], key=lambda p: p["naam"]),
         "trades": sorted(trades, key=lambda t: t["meldingsdatum"] or "", reverse=True),
         "koershistorie_map": "koersen/",
+        "insiders": {tk: v[:15] for tk, v in insiders.items() if v},
     }
     with open(os.path.join(OUT_DIR, "data.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
