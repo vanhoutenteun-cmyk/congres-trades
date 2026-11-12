@@ -1,0 +1,106 @@
+{
+"BBIO": {
+"sector": "Gezondheidszorg",
+"naam": "BridgeBio Pharma, Inc."
+},
+"WBD": {
+"sector": "Communicatie",
+"naam": "Warner Bros. Discovery, Inc."
+},
+"MSFT": {
+"sector": "Technologie",
+"naam": "Microsoft Corporation"
+},
+"CMCSA": {
+"sector": "Communicatie",
+"naam": "Comcast Corporation"
+},
+"TLH": {
+"sector": "Financiën",
+"naam": "iShares 10-20 Year Treasury Bond ETF"
+},
+"MDYG": {
+"sector": "Financiën",
+"naam": "State Street SPDR S&P 400 Mid Cap Growth ETF"
+},
+"XAR": {
+"sector": "Financiën",
+"naam": "State Street SPDR S&P Aerospace & Defense ETF"
+},
+"CSCO": {
+"sector": "Technologie",
+"naam": "Cisco Systems, Inc."
+},
+"AMGN": {
+"sector": "Gezondheidszorg",
+"naam": "Amgen Inc."
+},
+"META": {
+"sector": "Communicatie",
+"naam": "Meta Platforms, Inc."
+},
+"EIX": {
+"sector": "Nutsbedrijven",
+"naam": "Edison International"
+},
+"LNT": {
+"sector": "Nutsbedrijven",
+"naam": "Alliant Energy Corporation"
+},
+"CMS": {
+"sector": "Nutsbedrijven",
+"naam": "CMS Energy Corporation"
+},
+"IEUR": {
+"sector": "Financiën",
+"naam": "iShares Core MSCI Europe ETF"
+},
+"ZTS": {
+"sector": "Gezondheidszorg",
+"naam": "Zoetis Inc."
+},
+"CIEN": {
+"sector": "Technologie",
+"naam": "Ciena Corporation"
+},
+"CF": {
+"sector": "Grondstoffen",
+"naam": "CF Industries Holdings, Inc."
+},
+"ARE": {
+"sector": "Vastgoed",
+"naam": "Alexandria Real Estate Equities, Inc."
+},
+"AAPL": {
+"sector": "Technologie",
+"naam": "Apple Inc."
+},
+"CMG": {
+"sector": "Consument (cyclisch)",
+"naam": "Chipotle Mexican Grill, Inc."
+},
+"SPYG": {
+"sector": "Financiën",
+"naam": "State Street SPDR Portfolio S&P 500 Growth ETF"
+},
+"CTVA": {
+"sector": "Grondstoffen",
+"naam": "Corteva, Inc."
+},
+"XLE": {
+"sector": "Financiën",
+"naam": "State Street Energy Select Sector SPDR ETF"
+},
+"CINF": {
+"sector": "Financiën",
+"naam": "Cincinnati Financial Corporation"
+},
+"LLY": {
+"sector": "Gezondheidszorg",
+"naam": "Eli Lilly and Company"
+},
+"ENGQF": {
+"sector": "Nutsbedrijven",
+"naam": "Engie S.A."
+}
+}
