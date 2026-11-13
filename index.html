@@ -238,7 +238,8 @@ const S = {
     rondes:{k:'saleTx', d:-1}, open:{k:'lastTx', d:-1}, prondes:{k:'saleTx', d:-1}, popen:{k:'lastTx', d:-1},
     watch:{k:'tx', d:-1}, pols:{k:'n', d:-1}, wpols:{k:'n', d:-1}
   },
-  f: {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'},
+  f: {pol:'', ticker:'', sector:'', soort:'', type:'', kamer:'', partij:'', periode:'all'},
+  sigType: '',
   polDetail: null,
   tview: 'trades',
   hz: 'm', trType: 'all', minN: true,
@@ -344,7 +345,7 @@ function makeSample(){
     if (tr._ri >= 4) tr.signalen.push('groot bedrag');
     if (daysBetween(tr.transactiedatum, tr.meldingsdatum) > 45) tr.signalen.push('late melding');
     const others = trades.filter(o => o !== tr && o.ticker === tr.ticker && o.politicus_id !== tr.politicus_id && Math.abs(daysBetween(o.transactiedatum, tr.transactiedatum)) <= 14);
-    if (others.length) tr.signalen.push('cluster');
+    if (others.length) tr.signalen.push(others.every(o => o.type === tr.type) ? (tr.type === 'koop' ? 'cluster kopen' : 'cluster verkopen') : 'cluster gemengd');
     const pol = politici.find(x => x.id === tr.politicus_id);
     const cm = pol && pol.commissies.find(c => (C2S[c] || []).includes(tr.sector));
     if (cm) { tr.signalen.push('commissie-match'); tr.commissie_match = cm; }
@@ -402,7 +403,7 @@ function prepare(raw){
       partij:p ? p.partij : '', kamer:p ? p.kamer : '', type, ticker, bedrijf:t.bedrijf || '', sector:t.sector || 'Onbekend',
       range:rangeTxt, rangeV:m ? parseInt(m[0].replace(/[.,]/g, ''), 10) : null, tx, mel,
       delay:tx && mel ? daysBetween(tx, mel) : null, pT, pM, pN, rT, rM, dir, hz, hd,
-      sig:Array.isArray(t.signalen) ? t.signalen.slice() : [], owner:t.eigenaar || '', saleKind:t.verkoop_soort || null, cm:t.commissie_match || null, insMatch:t.insider_match || null
+      sig:Array.isArray(t.signalen) ? t.signalen.slice() : [], soort:t.soort || 'Aandeel', owner:t.eigenaar || '', saleKind:t.verkoop_soort || null, cm:t.commissie_match || null, insMatch:t.insider_match || null
     };
   });
   let ref = raw.laatst_bijgewerkt ? String(raw.laatst_bijgewerkt).slice(0, 10) : null;
@@ -448,7 +449,7 @@ function tradeTable(rows, key, opts){
   const body = sorted.map(t => `<tr class="click" tabindex="0" data-trade="${t.id}" aria-label="Koersgrafiek ${esc(t.ticker)}, ${esc(t.polName)}">
     ${opts.hidePol ? '' : `<td><div>${esc(t.polName)}</div><div class="small muted">${esc([t.partij && t.partij !== '–' ? t.partij : '', t.pol && t.pol.staat].filter(Boolean).join('-'))}${(t.partij && t.partij !== '–') || (t.pol && t.pol.staat) ? ' · ' : ''}${esc(kamerNl(t.kamer))}</div>${sigPills(t.sig)}</td>`}
     <td>${typePill(t.type)}${opts.hidePol ? sigPills(t.sig) : ''}</td>
-    <td><span class="tick">${esc(t.ticker)}</span> ${starBtn('tic', t.ticker, t.ticker)}<div class="small muted">${esc(t.bedrijf)}</div></td>
+    <td><span class="tick">${esc(t.ticker)}</span> ${starBtn('tic', t.ticker, t.ticker)}${t.soort !== 'Aandeel' ? ` <span class="pill">${esc(t.soort)}</span>` : ''}<div class="small muted">${esc(t.bedrijf)}</div></td>
     <td>${esc(t.sector)}</td>
     <td class="small">${esc(t.range)}</td>
     <td>${fmtDate(t.tx)}<div class="small muted">gemeld ${fmtDate(t.mel)}${t.delay != null ? ` (${t.delay} d)` : ''}</div></td>
@@ -477,6 +478,12 @@ function buildRounds(){
     groups.get(k).push(t);
   });
   const rounds = [], open = [], orphans = [];
+  const minTx = D.trades.reduce((m, t) => t.tx && (!m || t.tx < m) ? t.tx : m, null);
+  const firstPT = new Map();
+  D.trades.forEach(t => { if (!t.tx) return; const k = t.pid + '|' + t.ticker; if (!firstPT.has(k) || t.tx < firstPT.get(k)) firstPT.set(k, t.tx); });
+  D.trades.forEach(t => {
+    if (t.type === 'koop' && t.tx && minTx && t.tx >= addDays(minTx, 365) && firstPT.get(t.pid + '|' + t.ticker) === t.tx && !t.sig.includes('nieuwe positie')) t.sig.push('nieuwe positie');
+  });
   groups.forEach(list => {
     list.sort((a, b) => a.tx < b.tx ? -1 : a.tx > b.tx ? 1 : (a.type === 'koop' ? -1 : 1));
     let buys = [];
@@ -503,7 +510,7 @@ function mkRound(id, buys, sale, partial){
   if (sale.hz && sale.hz['3m'] != null && sale.hz['3m'] <= -15) tags.push('daling na verkoop');
   tags.forEach(x => { if (!sale.sig.includes(x)) sale.sig.push(x); });
   return {id, pid:sale.pid, pol:sale.pol, polName:sale.polName, partij:sale.partij, kamer:sale.kamer, ticker:sale.ticker,
-    bedrijf:sale.bedrijf, sector:sale.sector, owner:ownerKey(sale.owner), buys, sale, partial, nBuys:buys.length,
+    bedrijf:sale.bedrijf, sector:sale.sector, soort:sale.soort, owner:ownerKey(sale.owner), buys, sale, partial, nBuys:buys.length,
     buyTx:first.tx, saleTx:sale.tx, days:daysBetween(first.tx, sale.tx),
     rW:pct(avgOf(buys, 'pT'), sale.pT), rZ:pct(avgOf(buys, 'pM'), sale.pM), tags,
     kind:partial ? 'deelverkoop' : sale.saleKind === 'volledig' ? 'volledig' : 'omvang onbekend'};
@@ -511,7 +518,7 @@ function mkRound(id, buys, sale, partial){
 function mkOpen(idx, buys){
   const b0 = buys[0], bl = buys[buys.length - 1];
   return {idx, pid:b0.pid, pol:b0.pol, polName:b0.polName, partij:b0.partij, kamer:b0.kamer, ticker:b0.ticker, bedrijf:b0.bedrijf,
-    sector:b0.sector, owner:ownerKey(b0.owner), buys, nBuys:buys.length, firstTx:b0.tx, lastTx:bl.tx, days:daysBetween(b0.tx, D.ref),
+    sector:b0.sector, soort:b0.soort, owner:ownerKey(b0.owner), buys, nBuys:buys.length, firstTx:b0.tx, lastTx:bl.tx, days:daysBetween(b0.tx, D.ref),
     rW:pct(avgOf(buys, 'pT'), b0.pN), rZ:pct(avgOf(buys, 'pM'), b0.pN), partSold:buys.some(b => b.partSold)};
 }
 function limitBar(key, total, lim){
@@ -692,6 +699,7 @@ function renderFilters(){
     sel('pol', 'Politicus', [['', 'Alle politici'], ...pols.map(p => [p.id, p.naam])]) +
     sel('ticker', 'Ticker', [['', 'Alle tickers'], ...uniq(D.trades.map(t => t.ticker)).map(x => [x, x])]) +
     sel('sector', 'Sector', [['', 'Alle sectoren'], ...uniq(D.trades.map(t => t.sector)).map(x => [x, x])]) +
+    sel('soort', 'Soort', [['', 'Alles'], ...uniq(D.trades.map(t => t.soort)).map(x => [x, x === 'Aandeel' ? 'Aandelen' : x === 'ETF' ? "ETF's" : x === 'REIT' ? "REIT's" : x])]) +
     sel('type', 'Koop/verkoop', [['', 'Beide'], ['koop', 'Koop'], ['verkoop', 'Verkoop']]) +
     sel('kamer', 'Kamer', [['', 'Beide'], ...uniq(D.pols.map(p => p.kamer)).map(x => [x, kamerNl(x)])]) +
     sel('partij', 'Partij', [['', 'Alle partijen'], ...uniq(D.pols.map(p => p.partij)).map(x => [x, x])]) +
@@ -702,12 +710,12 @@ function filteredTrades(){
   const f = S.f;
   const since = f.periode === 'all' ? null : addDays(D.ref, -parseInt(f.periode, 10));
   return D.trades.filter(t => (!f.pol || t.pid === f.pol) && (!f.ticker || t.ticker === f.ticker) && (!f.sector || t.sector === f.sector) &&
-    (!f.type || t.type === f.type) && (!f.kamer || t.kamer === f.kamer) && (!f.partij || t.partij === f.partij) && (!since || (t.tx && t.tx >= since)));
+    (!f.soort || t.soort === f.soort) && (!f.type || t.type === f.type) && (!f.kamer || t.kamer === f.kamer) && (!f.partij || t.partij === f.partij) && (!since || (t.tx && t.tx >= since)));
 }
 function roundFilter(list, dateKey){
   const f = S.f;
   const since = f.periode === 'all' ? null : addDays(D.ref, -parseInt(f.periode, 10));
-  return list.filter(r => (!f.pol || r.pid === f.pol) && (!f.ticker || r.ticker === f.ticker) && (!f.sector || r.sector === f.sector) &&
+  return list.filter(r => (!f.pol || r.pid === f.pol) && (!f.ticker || r.ticker === f.ticker) && (!f.sector || r.sector === f.sector) && (!f.soort || r.soort === f.soort) &&
     (!f.kamer || r.kamer === f.kamer) && (!f.partij || r.partij === f.partij) && (!since || (r[dateKey] && r[dateKey] >= since)));
 }
 function renderTrades(){
@@ -823,17 +831,18 @@ function renderSectoren(){
 
 /* ---------- tab: ongebruikelijk ---------- */
 function renderOngebruikelijk(){
-  const all = D.trades.filter(t => t.sig.length);
+  const all = D.trades.filter(t => t.sig.length && (!S.sigType || t.type === S.sigType));
   const sigs = [...new Set(all.flatMap(t => t.sig))].sort((a, b) => a.localeCompare(b, 'nl'));
   if (S.sigFilter && !sigs.includes(S.sigFilter)) S.sigFilter = '';
   const rows = S.sigFilter ? all.filter(t => t.sig.includes(S.sigFilter)) : all;
   $('#p-ongebruikelijk').innerHTML = `<h2>Ongebruikelijk</h2>
+    <div class="chips" role="group" aria-label="Koop of verkoop" style="margin-bottom:8px">${[['', 'Kopen en verkopen'], ['koop', 'Alleen kopen'], ['verkoop', 'Alleen verkopen']].map(o => `<button class="chip" type="button" data-sigtype="${o[0]}" aria-pressed="${S.sigType === o[0]}">${o[1]}</button>`).join('')}</div>
     <div class="rowbar"><div class="chips" role="group" aria-label="Signaal">
       <button class="chip" type="button" data-sig="" aria-pressed="${!S.sigFilter}">Alle (${all.length})</button>
       ${sigs.map(s => `<button class="chip" type="button" data-sig="${esc(s)}" aria-pressed="${S.sigFilter === s}">${esc(s)} (${all.filter(t => t.sig.includes(s)).length})</button>`).join('')}
     </div><span class="small muted">Standaard: nieuwste melding bovenaan</span></div>
     ${tradeTable(rows, 'unusual', {empty:'Geen trades met signalen.'})}
-    ${note(`<li><strong>Wat betekenen de signalen?</strong> Groot bedrag: ondergrens van de bandbreedte vanaf $250.001. Late melding: meer dan 45 dagen na de trade gemeld. Cluster: een andere politicus handelde binnen 14 dagen in hetzelfde aandeel. Commissie-match: de politicus zit in een commissie die over de sector of branche van het bedrijf gaat (grove indeling, controleer zelf). Insider zelfde richting: een bestuurder of grootaandeelhouder van het bedrijf kocht of verkocht binnen 30 dagen hetzelfde kant op (alleen gewone aankopen en verkopen, geen opties of schenkingen).</li><li>Signalen zijn aanwijzingen om verder te kijken, geen bewijs van iets onrechtmatigs.</li>`)}`;
+    ${note(`<li><strong>Wat betekenen de signalen?</strong> Groot bedrag: ondergrens van de bandbreedte vanaf $250.001. Late melding: meer dan 45 dagen na de trade gemeld. Cluster kopen / verkopen: een of meer andere politici handelden binnen 14 dagen in hetzelfde aandeel, allemaal dezelfde kant op (gemengd: niet allemaal dezelfde kant). Nieuwe positie: de eerste aankoop van dit aandeel door deze politicus die in de data staat (alleen getoond als er minstens een jaar eerdere data is). Commissie-match: de politicus zit in een commissie die over de sector of branche van het bedrijf gaat (grove indeling, controleer zelf). Insider koopt / verkoopt ook: een bestuurder of grootaandeelhouder van het bedrijf deed binnen 30 dagen hetzelfde (alleen gewone aankopen en verkopen, geen opties of schenkingen). Insiders verkopen veel vaker dan ze kopen, onder meer om belasting te betalen of te spreiden, dus “insider koopt ook” komt zelden voor.</li><li>Signalen zijn geen koop- of verkoopadvies. Ze markeren wat opvalt aan een trade, en een signaal bij een verkoop betekent niet dat jij moet verkopen. Ze zijn aanwijzingen om verder te kijken, geen bewijs van iets onrechtmatigs.</li>`)}`;
 }
 
 /* ---------- tab: volglijst ---------- */
@@ -968,7 +977,7 @@ document.addEventListener('click', e => {
     if (st.k === col) st.d = -st.d; else { st.k = col; st.d = ['polName', 'ticker', 'sector', 'type', 'name'].includes(col) ? 1 : -1; }
     render(); return;
   }
-  if (e.target.closest('[data-reset]')) { S.f = {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'}; renderFilters(); renderTrades(); return; }
+  if (e.target.closest('[data-reset]')) { S.f = {pol:'', ticker:'', sector:'', soort:'', type:'', kamer:'', partij:'', periode:'all'}; renderFilters(); renderTrades(); return; }
   if (e.target.closest('[data-back]')) { S.polDetail = null; render(); return; }
   const sp = e.target.closest('[data-secp]'); if (sp) { S.secPeriod = sp.dataset.secp; render(); return; }
   const tvb = e.target.closest('[data-tview]'); if (tvb) { S.tview = tvb.dataset.tview; renderTrades(); return; }
@@ -977,6 +986,7 @@ document.addEventListener('click', e => {
   const hzb = e.target.closest('[data-hz]'); if (hzb) { S.hz = hzb.dataset.hz; render(); return; }
   const trb = e.target.closest('[data-trt]'); if (trb) { S.trType = trb.dataset.trt; render(); return; }
   const mo = e.target.closest('[data-more]'); if (mo) { const k = mo.dataset.more; S.lim[k] = (S.lim[k] || 250) + 250; if (S.tab === 'trades') renderTrades(); else render(); return; }
+  const st = e.target.closest('[data-sigtype]'); if (st) { S.sigType = st.dataset.sigtype; render(); return; }
   const sg = e.target.closest('[data-sig]'); if (sg) { S.sigFilter = sg.dataset.sig; render(); return; }
   const tr = e.target.closest('[data-trade]'); if (tr && !e.target.closest('dialog')) { openTrade(+tr.dataset.trade); return; }
   const pr = e.target.closest('[data-pol]');
