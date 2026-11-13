@@ -333,9 +333,11 @@ def build():
         if not ticker:  # FMP laat 'symbol' soms leeg terwijl de ticker tussen haakjes in de omschrijving staat
             m = re.search(r"\(([A-Z]{1,5}(?:[.\-][A-Z])?)\)\s*$", str(pick(r, "assetDescription") or ""))
             ticker = m.group(1) if m else ""
-        if "option" in str(pick(r, "assetType") or "").lower():
-            skipped += 1  # opties: koersrendement van het aandeel zegt weinig over een optie
+        atype = str(pick(r, "assetType") or "").lower()
+        if any(k in atype for k in ("option", "bond", "government", "municipal", "treasury")):
+            skipped += 1  # opties en obligaties: de aandelenkoers zegt daar weinig over
             continue
+        soort = "ETF" if "etf" in atype or "fund" in atype else "REIT" if "reit" in atype else "Aandeel"
         typ = trade_type(pick(r, "type", "transactionType"))
         tx = to_date(pick(r, "transactionDate"))
         mel = to_date(pick(r, "disclosureDate", "dateRecieved", "dateReceived"))
@@ -363,6 +365,7 @@ def build():
             "bedrijf": pick(r, "assetDescription", "companyName") or ticker, "sector": None,
             "bedrag_range": amount, "transactiedatum": tx, "meldingsdatum": mel,
             "eigenaar": pick(r, "owner"), "link": pick(r, "link"), "signalen": [],
+            "soort": soort,
             "verkoop_soort": ("gedeeltelijk" if "partial" in str(pick(r, "type") or "").lower()
                               else "volledig" if "full" in str(pick(r, "type") or "").lower() else None) if typ == "verkoop" else None,
         }
@@ -427,7 +430,7 @@ def build():
     for t in trades:
         tk = t["ticker"]
         c = cache.get(tk, {})
-        t["sector"] = c.get("sector") or "Onbekend"
+        t["sector"] = c.get("sector") or ("ETF / fonds" if t.get("soort") == "ETF" else "Onbekend")
         if c.get("naam"):
             t["bedrijf"] = c["naam"]
         t["koers_transactie"] = close_on(tk, t["transactiedatum"])
@@ -456,16 +459,18 @@ def build():
             if delay > 45:
                 s.append("late melding")
         txd = date.fromisoformat(t["transactiedatum"])
-        if any(o["politicus_id"] != t["politicus_id"] and abs((date.fromisoformat(o["transactiedatum"]) - txd).days) <= 14
-               for o in by_tk[t["ticker"]]):
-            s.append("cluster")
+        others = [o for o in by_tk[t["ticker"]] if o["politicus_id"] != t["politicus_id"]
+                  and abs((date.fromisoformat(o["transactiedatum"]) - txd).days) <= 14]
+        if others:
+            same = all(o["type"] == t["type"] for o in others)
+            s.append(("cluster kopen" if t["type"] == "koop" else "cluster verkopen") if same else "cluster gemengd")
         if t["meldingsdatum"] and t["meldingsdatum"] >= INSIDER_SINCE:
             ins = insider_match(t, insiders.get(t["ticker"], []))
             if ins:
-                s.append("insider zelfde richting")
+                s.append("insider koopt ook" if t["type"] == "koop" else "insider verkoopt ook")
                 t["insider_match"] = ins
         p = politici.get(t["politicus_id"]) or {}
-        cm = committee_match(p.get("commissies") or [], t["sector"], cache.get(t["ticker"], {}).get("industrie", ""))
+        cm = None if t.get("soort") == "ETF" else committee_match(p.get("commissies") or [], t["sector"], cache.get(t["ticker"], {}).get("industrie", ""))
         if cm:
             s.append("commissie-match")
             t["commissie_match"] = cm
