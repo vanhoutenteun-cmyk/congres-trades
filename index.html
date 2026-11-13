@@ -207,7 +207,7 @@ const store = {
 };
 const KAMER = {House:'Huis', Senate:'Senaat'};
 const HZ_DAYS = {'1m':30, '3m':91, '6m':182, '12m':365};
-const HZ_LABEL = {m:'sinds melding', '1m':'na 1 maand', '3m':'na 3 maanden', '6m':'na 6 maanden', '12m':'na 12 maanden'};
+const HZ_LABEL = {m:'sinds zichtbaar moment', '1m':'na 1 maand', '3m':'na 3 maanden', '6m':'na 6 maanden', '12m':'na 12 maanden'};
 const median = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const kamerNl = k => KAMER[k] || k || '–';
 
@@ -235,10 +235,12 @@ const S = {
   tab: store.get('ct.tab', 'overzicht'),
   sort: {
     trades:{k:'tx', d:-1}, detail:{k:'tx', d:-1}, unusual:{k:'mel', d:-1},
+    rondes:{k:'saleTx', d:-1}, open:{k:'lastTx', d:-1}, prondes:{k:'saleTx', d:-1}, popen:{k:'lastTx', d:-1},
     watch:{k:'tx', d:-1}, pols:{k:'n', d:-1}, wpols:{k:'n', d:-1}
   },
   f: {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'},
   polDetail: null,
+  tview: 'trades',
   hz: 'm', trType: 'all', minN: true,
   lim: {},
   sigFilter: '',
@@ -400,7 +402,7 @@ function prepare(raw){
       partij:p ? p.partij : '', kamer:p ? p.kamer : '', type, ticker, bedrijf:t.bedrijf || '', sector:t.sector || 'Onbekend',
       range:rangeTxt, rangeV:m ? parseInt(m[0].replace(/[.,]/g, ''), 10) : null, tx, mel,
       delay:tx && mel ? daysBetween(tx, mel) : null, pT, pM, pN, rT, rM, dir, hz, hd,
-      sig:Array.isArray(t.signalen) ? t.signalen : [], cm:t.commissie_match || null, insMatch:t.insider_match || null
+      sig:Array.isArray(t.signalen) ? t.signalen.slice() : [], owner:t.eigenaar || '', saleKind:t.verkoop_soort || null, cm:t.commissie_match || null, insMatch:t.insider_match || null
     };
   });
   let ref = raw.laatst_bijgewerkt ? String(raw.laatst_bijgewerkt).slice(0, 10) : null;
@@ -442,7 +444,7 @@ function tradeTable(rows, key, opts){
   const sorted = all.slice(0, lim);
   const head = (opts.hidePol ? '' : th('Politicus', key, 'polName')) + th('Koop/verkoop', key, 'type') + th('Ticker', key, 'ticker') +
     th('Sector', key, 'sector') + th('Bedragrange', key, 'rangeV') + th('Transactiedatum', key, 'tx') +
-    th('% sinds transactie', key, 'rT', 1) + th('% sinds melding', key, 'rM', 1);
+    th('% werkelijk moment', key, 'rT', 1) + th('% zichtbaar moment', key, 'rM', 1);
   const body = sorted.map(t => `<tr class="click" tabindex="0" data-trade="${t.id}" aria-label="Koersgrafiek ${esc(t.ticker)}, ${esc(t.polName)}">
     ${opts.hidePol ? '' : `<td><div>${esc(t.polName)}</div><div class="small muted">${esc([t.partij && t.partij !== '–' ? t.partij : '', t.pol && t.pol.staat].filter(Boolean).join('-'))}${(t.partij && t.partij !== '–') || (t.pol && t.pol.staat) ? ' · ' : ''}${esc(kamerNl(t.kamer))}</div>${sigPills(t.sig)}</td>`}
     <td>${typePill(t.type)}${opts.hidePol ? sigPills(t.sig) : ''}</td>
@@ -455,8 +457,124 @@ function tradeTable(rows, key, opts){
   return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${more}`;
 }
 
+/* ---------- rondes (koop -> verkoop) ---------- */
+const OWNER_NL = {zelf:'zelf', partner:'partner', gezamenlijk:'gezamenlijk', kind:'kind', onbekend:'onbekend'};
+function ownerKey(o){
+  const s = String(o || '').toLowerCase();
+  if (!s) return 'onbekend';
+  if (s.includes('spouse')) return 'partner';
+  if (s.includes('joint')) return 'gezamenlijk';
+  if (s.includes('child') || s.includes('dependent')) return 'kind';
+  if (s.includes('self')) return 'zelf';
+  return s;
+}
+function buildRounds(){
+  const groups = new Map();
+  D.trades.forEach(t => {
+    if (!t.tx) return;
+    const k = t.pid + '|' + t.ticker + '|' + ownerKey(t.owner);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  });
+  const rounds = [], open = [], orphans = [];
+  groups.forEach(list => {
+    list.sort((a, b) => a.tx < b.tx ? -1 : a.tx > b.tx ? 1 : (a.type === 'koop' ? -1 : 1));
+    let buys = [];
+    list.forEach(t => {
+      if (t.type === 'koop') { buys.push(t); return; }
+      if (!buys.length) { orphans.push(t); return; }
+      const partial = t.saleKind === 'gedeeltelijk';
+      const r = mkRound(rounds.length, buys.slice(), t, partial);
+      rounds.push(r);
+      buys.forEach(b => { (b.rounds = b.rounds || []).push(r.id); });
+      t.rounds = [r.id];
+      if (partial) buys.forEach(b => { b.partSold = true; }); else buys = [];
+    });
+    if (buys.length) open.push(mkOpen(open.length, buys));
+  });
+  D.rounds = rounds; D.open = open; D.orphans = orphans;
+  D.roundById = new Map(rounds.map(r => [r.id, r]));
+}
+function avgOf(list, k){ const v = list.map(x => x[k]).filter(x => x); return v.length ? mean(v) : null; }
+function mkRound(id, buys, sale, partial){
+  const first = buys[0], last = buys[buys.length - 1];
+  const tags = [];
+  if (daysBetween(last.tx, sale.tx) <= 30) tags.push('snelle omkering');
+  if (sale.hz && sale.hz['3m'] != null && sale.hz['3m'] <= -15) tags.push('daling na verkoop');
+  tags.forEach(x => { if (!sale.sig.includes(x)) sale.sig.push(x); });
+  return {id, pid:sale.pid, pol:sale.pol, polName:sale.polName, partij:sale.partij, kamer:sale.kamer, ticker:sale.ticker,
+    bedrijf:sale.bedrijf, sector:sale.sector, owner:ownerKey(sale.owner), buys, sale, partial, nBuys:buys.length,
+    buyTx:first.tx, saleTx:sale.tx, days:daysBetween(first.tx, sale.tx),
+    rW:pct(avgOf(buys, 'pT'), sale.pT), rZ:pct(avgOf(buys, 'pM'), sale.pM), tags,
+    kind:partial ? 'deelverkoop' : sale.saleKind === 'volledig' ? 'volledig' : 'omvang onbekend'};
+}
+function mkOpen(idx, buys){
+  const b0 = buys[0], bl = buys[buys.length - 1];
+  return {idx, pid:b0.pid, pol:b0.pol, polName:b0.polName, partij:b0.partij, kamer:b0.kamer, ticker:b0.ticker, bedrijf:b0.bedrijf,
+    sector:b0.sector, owner:ownerKey(b0.owner), buys, nBuys:buys.length, firstTx:b0.tx, lastTx:bl.tx, days:daysBetween(b0.tx, D.ref),
+    rW:pct(avgOf(buys, 'pT'), b0.pN), rZ:pct(avgOf(buys, 'pM'), b0.pN), partSold:buys.some(b => b.partSold)};
+}
+function limitBar(key, total, lim){
+  return total > lim ? `<div class="rowbar" style="margin-top:10px"><span class="small muted">${lim} van ${total} getoond</span><button class="btn" type="button" data-more="${key}">Toon meer</button></div>` : '';
+}
+function polCell(r){
+  return `<td><div>${esc(r.polName)}</div><div class="small muted">${esc([r.partij && r.partij !== '–' ? r.partij : '', r.pol && r.pol.staat].filter(Boolean).join('-'))}${(r.partij && r.partij !== '–') || (r.pol && r.pol.staat) ? ' · ' : ''}${esc(kamerNl(r.kamer))}</div></td>`;
+}
+function roundTable(rows, key, opts){
+  opts = opts || {};
+  if (!rows.length) return '<div class="tablewrap"><div class="empty">Geen afgeronde rondes gevonden.</div></div>';
+  const all = sortRows(rows, S.sort[key]), lim = S.lim[key] || 250, list = all.slice(0, lim);
+  const head = (opts.hidePol ? '' : th('Politicus', key, 'polName')) + th('Ticker', key, 'ticker') + th('Gekocht', key, 'buyTx') + th('Verkocht', key, 'saleTx') +
+    th('Houdperiode', key, 'days', 1) + th('% werkelijk moment', key, 'rW', 1) + th('% zichtbaar moment', key, 'rZ', 1);
+  const body = list.map(r => `<tr class="click" tabindex="0" data-round="${r.id}" aria-label="Ronde ${esc(r.ticker)}, ${esc(r.polName)}">
+    ${opts.hidePol ? '' : polCell(r)}
+    <td><span class="tick">${esc(r.ticker)}</span> ${starBtn('tic', r.ticker, r.ticker)}<div class="small muted">${esc(r.bedrijf)}</div>
+      <div class="pills"><span class="pill">${esc(r.kind)}</span><span class="pill">eigenaar: ${esc(OWNER_NL[r.owner] || r.owner)}</span>${r.tags.map(x => `<span class="pill sig">${esc(x)}</span>`).join('')}</div></td>
+    <td>${fmtDate(r.buyTx)}${r.nBuys > 1 ? `<div class="small muted">${r.nBuys} aankopen</div>` : ''}</td>
+    <td>${fmtDate(r.saleTx)}<div class="small muted">gemeld ${fmtDate(r.sale.mel)}</div></td>
+    <td class="r">${r.days} d</td><td class="r">${pctCell(r.rW)}</td><td class="r">${pctCell(r.rZ)}</td></tr>`).join('');
+  return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${limitBar(key, all.length, lim)}`;
+}
+function openTable(rows, key, opts){
+  opts = opts || {};
+  if (!rows.length) return '<div class="tablewrap"><div class="empty">Geen open posities gevonden.</div></div>';
+  const all = sortRows(rows, S.sort[key]), lim = S.lim[key] || 250, list = all.slice(0, lim);
+  const head = (opts.hidePol ? '' : th('Politicus', key, 'polName')) + th('Ticker', key, 'ticker') + th('Eerste aankoop', key, 'firstTx') + th('Laatste aankoop', key, 'lastTx') +
+    th('In bezit', key, 'days', 1) + th('% werkelijk moment', key, 'rW', 1) + th('% zichtbaar moment', key, 'rZ', 1);
+  const body = list.map(o => `<tr class="click" tabindex="0" data-openpos="${o.idx}" aria-label="Open positie ${esc(o.ticker)}, ${esc(o.polName)}">
+    ${opts.hidePol ? '' : polCell(o)}
+    <td><span class="tick">${esc(o.ticker)}</span> ${starBtn('tic', o.ticker, o.ticker)}<div class="small muted">${esc(o.bedrijf)}</div>
+      <div class="pills"><span class="pill">eigenaar: ${esc(OWNER_NL[o.owner] || o.owner)}</span>${o.partSold ? '<span class="pill">deels verkocht</span>' : ''}</div></td>
+    <td>${fmtDate(o.firstTx)}</td><td>${fmtDate(o.lastTx)}${o.nBuys > 1 ? `<div class="small muted">${o.nBuys} aankopen</div>` : ''}</td>
+    <td class="r">${o.days} d</td><td class="r">${pctCell(o.rW)}</td><td class="r">${pctCell(o.rZ)}</td></tr>`).join('');
+  return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${limitBar(key, all.length, lim)}`;
+}
+function polRoundsBlock(pid){
+  const rs = D.rounds.filter(r => r.pid === pid), os = D.open.filter(o => o.pid === pid), orph = D.orphans.filter(t => t.pid === pid).length;
+  const w = rs.map(r => r.rW).filter(v => v != null), z = rs.map(r => r.rZ).filter(v => v != null);
+  return `<h3 class="mt">Rondes koop → verkoop</h3>
+    <div class="kv" style="margin-bottom:12px">
+      <div><span>Afgeronde rondes</span><b>${rs.length}</b></div>
+      <div><span>Gem. werkelijk moment</span><b class="${cls(mean(w))}">${fmtPct(mean(w))}</b><span>mediaan ${fmtPct(median(w))}</span></div>
+      <div><span>Gem. zichtbaar moment</span><b class="${cls(mean(z))}">${fmtPct(mean(z))}</b><span>mediaan ${fmtPct(median(z))}</span></div>
+      <div><span>Gem. houdperiode</span><b>${rs.length ? Math.round(mean(rs.map(r => r.days))) + ' d' : '–'}</b></div>
+    </div>
+    ${roundTable(rs, 'prondes', {hidePol:true})}
+    <h3 class="mt">Open posities (${os.length})</h3>${openTable(os, 'popen', {hidePol:true})}
+    ${orph ? `<p class="small muted">${orph} verkoop${orph === 1 ? '' : 'en'} zonder bekende aankoop (aankoop van vóór de periode in de data).</p>` : ''}`;
+}
+function roundInfo(t){
+  if (!t.rounds || !t.rounds.length) return '';
+  const rs = t.rounds.map(id => D.roundById.get(id)).filter(Boolean);
+  return `<h3 style="margin:16px 0 6px">Onderdeel van ${rs.length === 1 ? 'ronde' : rs.length + ' rondes'}</h3><ul class="list">${rs.map(r => `<li class="small">
+    Gekocht ${fmtDate(r.buyTx)}${r.nBuys > 1 ? ` (${r.nBuys} aankopen)` : ''} → verkocht ${fmtDate(r.saleTx)} · ${r.days} dagen · ${esc(r.kind)}<br>
+    Werkelijk moment: <b class="${cls(r.rW)}">${fmtPct(r.rW)}</b> · Zichtbaar moment: <b class="${cls(r.rZ)}">${fmtPct(r.rZ)}</b></li>`).join('')}</ul>`;
+}
+const ROUND_NOTE = '<li><strong>Rondes:</strong> per politicus, aandeel en eigenaar (zelf, partner, gezamenlijk) koppelen we elke verkoop aan de eerdere aankopen die nog open stonden. Een volledige verkoop, of een verkoop waarvan de omvang onbekend is (bij het Huis meestal), sluit alle open aankopen af; een deelverkoop laat ze open. Bij meerdere aankopen gebruiken we de gemiddelde slotkoers. Een verkoop zonder eerdere aankoop in de data tellen we niet als ronde. Werkelijk moment: van aankoopdatum tot verkoopdatum. Zichtbaar moment: van melding van de aankoop tot melding van de verkoop.</li><li>Snelle omkering: verkocht binnen 30 dagen na de laatste aankoop. Daling na verkoop: de koers zakte minstens 15% in de 3 maanden na het zichtbare moment van de verkoop.</li>';
+
 function note(extra){
   return `<aside class="note"><strong>Goed om te weten</strong><ul>
+    <li><strong>Werkelijk moment</strong> = de transactiedatum (wanneer de politicus handelde). <strong>Zichtbaar moment</strong> = de meldingsdatum (wanneer jij de trade kon zien). Het rendement vanaf het zichtbare moment is wat je als volger in de praktijk had kunnen halen.</li>
     <li>Bedragen zijn bandbreedtes zoals gemeld, geen exacte bedragen.</li>
     <li>Rendement is het koersrendement van het aandeel, niet het exacte resultaat van de politicus.</li>
     <li>De transactiekoers is de slotkoers van de transactiedag (de werkelijke aankoopprijs is niet bekend).</li>
@@ -499,7 +617,7 @@ function polTable(stats, key){
     <td class="r">${s.freq == null ? '–' : fmtNum(s.freq, 1) + ' / mnd'}</td></tr>`).join('');
   return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
-const WIN_NOTE = '<li>Track record: gemeten vanaf de <strong>meldingsdatum</strong>, want pas dan kon je de trade zien. “Goede kant op”: bij een koop steeg de koers, bij een verkoop daalde hij. Gemiddelde en mediaan gebruiken dezelfde richting. Horizonnen die nog niet voorbij zijn en trades zonder koers tellen niet mee; het getal eronder is het aantal trades waarop het cijfer rust.</li><li>Let op: aandelen stijgen op lange termijn vaker dan ze dalen, dus bij kopen ligt “goede kant op” vanzelf al vaak boven 50%. Kleine aantallen zeggen weinig; een sterk track record kan toeval zijn.</li>';
+const WIN_NOTE = '<li>Track record: gemeten vanaf het <strong>zichtbare moment</strong> (de meldingsdatum), want pas dan kon je de trade zien. “Goede kant op”: bij een koop steeg de koers, bij een verkoop daalde hij. Gemiddelde en mediaan gebruiken dezelfde richting. Horizonnen die nog niet voorbij zijn en trades zonder koers tellen niet mee; het getal eronder is het aantal trades waarop het cijfer rust.</li><li>Let op: aandelen stijgen op lange termijn vaker dan ze dalen, dus bij kopen ligt “goede kant op” vanzelf al vaak boven 50%. Kleine aantallen zeggen weinig; een sterk track record kan toeval zijn.</li>';
 function hzControls(){
   return `<div class="rowbar"><div class="chips" role="group" aria-label="Horizon">${Object.keys(HZ_LABEL).map(k => `<button class="chip" type="button" data-hz="${k}" aria-pressed="${S.hz === k}">${HZ_LABEL[k]}</button>`).join('')}</div>
     <div class="chips" role="group" aria-label="Soort trades">${[['all', 'Alle trades'], ['koop', 'Alleen kopen'], ['verkoop', 'Alleen verkopen']].map(o => `<button class="chip" type="button" data-trt="${o[0]}" aria-pressed="${S.trType === o[0]}">${o[1]}</button>`).join('')}</div></div>`;
@@ -534,7 +652,7 @@ function renderOverzicht(){
 
   const latest = D.trades.filter(t => t.mel).sort((a, b) => a.mel < b.mel ? 1 : a.mel > b.mel ? -1 : 0).slice(0, 7);
   const latestHtml = latest.length ? `<ul class="list">${latest.map(t => `<li><button class="listbtn" type="button" data-trade="${t.id}">
-    <div class="flex between"><div>${typePill(t.type)} <span class="tick">${esc(t.ticker)}</span></div><span class="small ${cls(t.rM)}">${fmtPct(t.rM)} sinds melding</span></div>
+    <div class="flex between"><div>${typePill(t.type)} <span class="tick">${esc(t.ticker)}</span></div><span class="small ${cls(t.rM)}">${fmtPct(t.rM)} sinds zichtbaar moment</span></div>
     <div class="small muted" style="margin-top:4px">${esc(t.polName)} · gemeld ${fmtDate(t.mel)} · ${esc(t.range)}</div></button></li>`).join('')}</ul>` : '<div class="empty">Nog geen meldingen.</div>';
 
   const strong = D.trades.filter(t => t.mel && t.mel > addDays(ref, -30) && t.sig.length >= 2)
@@ -548,10 +666,10 @@ function renderOverzicht(){
     <div class="grid tiles">
       ${tile('Trades deze week', wk.length, `${wk.filter(t => t.type === 'koop').length} koop · ${wk.filter(t => t.type === 'verkoop').length} verkoop (gemeld, 7 dagen)`)}
       ${tile('Meldingen laatste 30 dagen', m30.length, `${new Set(m30.map(t => t.pid)).size} politici`)}
-      ${best ? tile('Beste sinds melding', `<span class="pos">${fmtPct(best.rM)}</span>`, `${esc(best.ticker)} · ${esc(best.polName)}`, best) : tile('Beste sinds melding', '–', 'geen koersdata')}
-      ${worst ? tile('Slechtste sinds melding', `<span class="neg">${fmtPct(worst.rM)}</span>`, `${esc(worst.ticker)} · ${esc(worst.polName)}`, worst) : tile('Slechtste sinds melding', '–', 'geen koersdata')}
+      ${best ? tile('Beste sinds zichtbaar moment', `<span class="pos">${fmtPct(best.rM)}</span>`, `${esc(best.ticker)} · ${esc(best.polName)}`, best) : tile('Beste sinds zichtbaar moment', '–', 'geen koersdata')}
+      ${worst ? tile('Slechtste sinds zichtbaar moment', `<span class="neg">${fmtPct(worst.rM)}</span>`, `${esc(worst.ticker)} · ${esc(worst.polName)}`, worst) : tile('Slechtste sinds zichtbaar moment', '–', 'geen koersdata')}
     </div>
-    <p class="small muted" style="margin:6px 2px 0">Beste/slechtste: koersrendement van het aandeel sinds de meldingsdatum, voor meldingen van de laatste 90 dagen.</p>
+    <p class="small muted" style="margin:6px 2px 0">Beste/slechtste: koersrendement van het aandeel sinds het zichtbare moment (de meldingsdatum), voor meldingen van de laatste 90 dagen.</p>
     <div class="grid two mt">
       <div class="card"><h3>Meerdere politici, zelfde aandeel</h3><p class="small muted" style="margin:-6px 0 6px">Transacties in de afgelopen 90 dagen, minstens twee verschillende politici.</p>${clusterHtml}</div>
       <div class="card"><h3>Nieuwste meldingen</h3>${latestHtml}</div>
@@ -586,11 +704,30 @@ function filteredTrades(){
   return D.trades.filter(t => (!f.pol || t.pid === f.pol) && (!f.ticker || t.ticker === f.ticker) && (!f.sector || t.sector === f.sector) &&
     (!f.type || t.type === f.type) && (!f.kamer || t.kamer === f.kamer) && (!f.partij || t.partij === f.partij) && (!since || (t.tx && t.tx >= since)));
 }
-function renderTrades(){
-  const rows = filteredTrades();
-  $('#tradesOut').innerHTML = `<div class="rowbar"><span class="small muted">${rows.length} van ${D.trades.length} trades · klik op een rij voor de koersgrafiek</span></div>
-    ${tradeTable(rows, 'trades', {empty:'Geen trades voor deze filters.'})}${note()}`;
+function roundFilter(list, dateKey){
+  const f = S.f;
+  const since = f.periode === 'all' ? null : addDays(D.ref, -parseInt(f.periode, 10));
+  return list.filter(r => (!f.pol || r.pid === f.pol) && (!f.ticker || r.ticker === f.ticker) && (!f.sector || r.sector === f.sector) &&
+    (!f.kamer || r.kamer === f.kamer) && (!f.partij || r.partij === f.partij) && (!since || (r[dateKey] && r[dateKey] >= since)));
 }
+function renderTrades(){
+  const views = [['trades', 'Losse trades'], ['rondes', `Rondes koop → verkoop (${D.rounds.length})`], ['open', `Open posities (${D.open.length})`]];
+  const tabs = `<div class="chips" role="group" aria-label="Weergave" style="margin-bottom:10px">${views.map(v => `<button class="chip" type="button" data-tview="${v[0]}" aria-pressed="${S.tview === v[0]}">${v[1]}</button>`).join('')}</div>`;
+  let out;
+  if (S.tview === 'rondes') {
+    const rows = roundFilter(D.rounds, 'saleTx');
+    out = `<div class="rowbar"><span class="small muted">${rows.length} rondes · periode-filter op verkoopdatum · het filter koop/verkoop geldt hier niet · klik voor de grafiek van de verkoop</span></div>${roundTable(rows, 'rondes')}`;
+  } else if (S.tview === 'open') {
+    const rows = roundFilter(D.open, 'lastTx');
+    out = `<div class="rowbar"><span class="small muted">${rows.length} open posities · periode-filter op laatste aankoop · klik voor de grafiek</span></div>${openTable(rows, 'open')}`;
+  } else {
+    const rows = filteredTrades();
+    out = `<div class="rowbar"><span class="small muted">${rows.length} van ${D.trades.length} trades · klik op een rij voor de koersgrafiek</span></div>
+    ${tradeTable(rows, 'trades', {empty:'Geen trades voor deze filters.'})}`;
+  }
+  $('#tradesOut').innerHTML = tabs + out + note(S.tview === 'trades' ? '' : ROUND_NOTE);
+}
+
 
 /* ---------- tab: politici ---------- */
 function renderPolitici(){
@@ -613,10 +750,11 @@ function renderPolitici(){
         </div>
         <h3 class="mt">Track record</h3>
         <div class="chips" role="group" aria-label="Soort trades" style="margin-bottom:10px">${[['all', 'Alle trades'], ['koop', 'Alleen kopen'], ['verkoop', 'Alleen verkopen']].map(o => `<button class="chip" type="button" data-trt="${o[0]}" aria-pressed="${S.trType === o[0]}">${o[1]}</button>`).join('')}</div>
-        <div class="tablewrap"><table style="min-width:520px"><thead><tr><th>Horizon (vanaf melding)</th><th class="r">Goede kant op</th><th class="r">Gemiddeld</th><th class="r">Mediaan</th><th class="r">Aantal trades</th></tr></thead><tbody>
+        <div class="tablewrap"><table style="min-width:520px"><thead><tr><th>Horizon (vanaf zichtbaar moment)</th><th class="r">Goede kant op</th><th class="r">Gemiddeld</th><th class="r">Mediaan</th><th class="r">Aantal trades</th></tr></thead><tbody>
         ${Object.keys(HZ_LABEL).map(k => { const c = hzCalc(s.trades, k); return `<tr><td>${HZ_LABEL[k]}</td><td class="r">${c.win == null ? '<span class="na">–</span>' : fmtNum(c.win, 0) + '%'}</td><td class="r">${pctCell(c.avg)}</td><td class="r">${pctCell(c.med)}</td><td class="r">${c.n}</td></tr>`; }).join('')}
         </tbody></table></div>
-        <h3 class="mt">Alle trades (${s.n})</h3>${tradeTable(s.trades, 'detail', {hidePol:true})}${note(WIN_NOTE)}`;
+        ${polRoundsBlock(p.id)}
+        <h3 class="mt">Alle trades (${s.n})</h3>${tradeTable(s.trades, 'detail', {hidePol:true})}${note(WIN_NOTE + ROUND_NOTE)}`;
       return;
     }
     S.polDetail = null;
@@ -753,7 +891,7 @@ function chartSvg(t){
     <g class="grid">${grid}</g>${xt}
     <line class="zero" x1="${m.l}" x2="${W - m.r}" y1="${Y(0)}" y2="${Y(0)}"/>
     <path class="l-stock" d="${path(s1)}"/>
-    ${mk(t.tx, 'm-tx', 'Transactie', txAnchor, 0)}${mk(t.mel, 'm-mel', 'Melding', melAnchor, close2 ? 1 : 0)}</svg>`;
+    ${mk(t.tx, 'm-tx', 'Werkelijk', txAnchor, 0)}${mk(t.mel, 'm-mel', 'Zichtbaar', melAnchor, close2 ? 1 : 0)}</svg>`;
 }
 function openTrade(id){
   const t = D.trades[id]; if (!t) return;
@@ -764,14 +902,15 @@ function openTrade(id){
       <button class="iconbtn" type="button" data-close aria-label="Sluiten">${ICON.close}</button></div>
     <div class="dlg-b">
       <div class="chart" id="chartBox">${needsLoad(t) ? '<div class="empty">Koersgrafiek laden…</div>' : chartSvg(t)}</div>
-      <div class="legend" style="margin:6px 0 14px"><span><i style="background:var(--accent)"></i>${esc(t.ticker)}</span><span>0% = slotkoers op de transactiedatum</span></div>
+      <div class="legend" style="margin:6px 0 14px"><span><i style="background:var(--accent)"></i>${esc(t.ticker)}</span><span>0% = slotkoers op het werkelijke moment (transactiedatum)</span></div>
       <div class="kv">
-        ${kv('Transactie', fmtDate(t.tx))}${kv('Melding', fmtDate(t.mel) + (t.delay != null ? ` <span class="small muted">(${t.delay} d)</span>` : ''))}
+        ${kv('Werkelijk moment (transactie)', fmtDate(t.tx))}${kv('Zichtbaar moment (melding)', fmtDate(t.mel) + (t.delay != null ? ` <span class="small muted">(${t.delay} d)</span>` : ''))}
         ${kv('Koers transactie', t.pT ? '$' + fmtNum(t.pT) : '–')}${kv('Koers melding', t.pM ? '$' + fmtNum(t.pM) : '–')}
-        ${kv('Koers nu', t.pN ? '$' + fmtNum(t.pN) : '–')}${kv('% sinds transactie', `<span class="${cls(t.rT)}">${fmtPct(t.rT)}</span>`)}
-        ${kv('% sinds melding', `<span class="${cls(t.rM)}">${fmtPct(t.rM)}</span>`)}
+        ${kv('Koers nu', t.pN ? '$' + fmtNum(t.pN) : '–')}${kv('% sinds werkelijk moment', `<span class="${cls(t.rT)}">${fmtPct(t.rT)}</span>`)}
+        ${kv('% sinds zichtbaar moment', `<span class="${cls(t.rM)}">${fmtPct(t.rM)}</span>`)}
       </div>
       ${t.cm ? `<p class="small" style="margin:14px 0 0"><span class="pill sig">commissie-match</span> ${esc(t.polName)} zit in <b>${esc(t.cm)}</b>. Die commissie raakt aan de sector of branche van dit bedrijf (${esc(t.sector)}).</p>` : ''}
+      ${roundInfo(t)}
       ${insiderBlock(t)}
       <p class="small muted" style="margin:14px 0 0">Koersrendement van het aandeel, niet het resultaat van de politicus. Transactiekoers = slotkoers op de transactiedag. Geen beleggingsadvies.</p>
     </div>`;
@@ -832,6 +971,9 @@ document.addEventListener('click', e => {
   if (e.target.closest('[data-reset]')) { S.f = {pol:'', ticker:'', sector:'', type:'', kamer:'', partij:'', periode:'all'}; renderFilters(); renderTrades(); return; }
   if (e.target.closest('[data-back]')) { S.polDetail = null; render(); return; }
   const sp = e.target.closest('[data-secp]'); if (sp) { S.secPeriod = sp.dataset.secp; render(); return; }
+  const tvb = e.target.closest('[data-tview]'); if (tvb) { S.tview = tvb.dataset.tview; renderTrades(); return; }
+  const rr = e.target.closest('[data-round]'); if (rr && !e.target.closest('[data-star]')) { const r = D.roundById.get(+rr.dataset.round); if (r) openTrade(r.sale.id); return; }
+  const orow = e.target.closest('[data-openpos]'); if (orow && !e.target.closest('[data-star]')) { const o = D.open[+orow.dataset.openpos]; if (o) openTrade(o.buys[o.buys.length - 1].id); return; }
   const hzb = e.target.closest('[data-hz]'); if (hzb) { S.hz = hzb.dataset.hz; render(); return; }
   const trb = e.target.closest('[data-trt]'); if (trb) { S.trType = trb.dataset.trt; render(); return; }
   const mo = e.target.closest('[data-more]'); if (mo) { const k = mo.dataset.more; S.lim[k] = (S.lim[k] || 250) + 250; if (S.tab === 'trades') renderTrades(); else render(); return; }
@@ -843,7 +985,7 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' && e.key !== ' ') return;
   const el = e.target;
-  if (el.matches && el.matches('tr[data-trade], tr[data-pol], .tile[data-trade]')) { e.preventDefault(); el.click(); }
+  if (el.matches && el.matches('tr[data-trade], tr[data-pol], .tile[data-trade], tr[data-round], tr[data-openpos]')) { e.preventDefault(); el.click(); }
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'minN') { S.minN = e.target.checked; render(); return; }
@@ -865,6 +1007,7 @@ async function load(){
     reason = location.protocol === 'file:' ? ' De pagina is lokaal geopend (file://); de meeste browsers blokkeren dan het inlezen van data.json. Open hem via een (lokale) webserver.' : '';
   }
   D = prepare(raw);
+  buildRounds();
   $('#updated').textContent = 'Laatst bijgewerkt: ' + (D.updated ? fmtUpdated(D.updated) : 'onbekend') + (sample ? ' · voorbeelddata' : '');
   if (sample) showBanner('<b>Voorbeelddata.</b> data.json is niet gevonden of niet leesbaar, dus je ziet fictieve politici, bedrijven en koersen.' + esc(reason));
   renderFilters(); renderTabs(); render();

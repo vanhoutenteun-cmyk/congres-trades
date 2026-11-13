@@ -17,7 +17,7 @@ worden hergebruikt van de vorige, gepubliceerde versie (PREV_URL), om aanroepen 
 Standaardbibliotheek van Python 3.9+, geen extra pakketten.
 Instellingen via omgevingsvariabelen:
   FMP_API_KEY    verplicht
-  LOOKBACK_DAYS  hoeveel dagen terug (transactiedatum), standaard 1095 (3 jaar; Starter geeft max. 5 jaar koersen)
+  LOOKBACK_DAYS  hoeveel dagen terug (transactiedatum), standaard 1825 (5 jaar, het maximum aan koershistorie in Starter)
   MAX_PAGES      max. pagina's per kamer, standaard 400
   PAGE_LIMIT     meldingen per pagina, standaard 100 (wordt automatisch verlaagd als FMP dat eist)
   MAX_TICKERS    max. aantal aandelen met koersen, standaard 3000
@@ -29,7 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 FMP = os.environ.get("FMP_BASE", "https://financialmodelingprep.com/stable")
 LEG = os.environ.get("LEG_BASE", "https://unitedstates.github.io/congress-legislators")
 KEY = os.environ.get("FMP_API_KEY", "").strip()
-LOOKBACK = int(os.environ.get("LOOKBACK_DAYS", "1095"))
+LOOKBACK = int(os.environ.get("LOOKBACK_DAYS", "1825"))
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "400"))
 PAGE_LIMIT = int(os.environ.get("PAGE_LIMIT", "100"))
 MAX_TICKERS = int(os.environ.get("MAX_TICKERS", "3000"))
@@ -363,6 +363,8 @@ def build():
             "bedrijf": pick(r, "assetDescription", "companyName") or ticker, "sector": None,
             "bedrag_range": amount, "transactiedatum": tx, "meldingsdatum": mel,
             "eigenaar": pick(r, "owner"), "link": pick(r, "link"), "signalen": [],
+            "verkoop_soort": ("gedeeltelijk" if "partial" in str(pick(r, "type") or "").lower()
+                              else "volledig" if "full" in str(pick(r, "type") or "").lower() else None) if typ == "verkoop" else None,
         }
     trades = list(trades.values())
     log(f"{len(trades)} trades, {skipped} meldingen overgeslagen (geen ticker/type/datum, of buiten de periode)")
