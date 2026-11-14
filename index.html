@@ -414,8 +414,9 @@ function closeOn(arr, date){
 const normH = a => (Array.isArray(a) ? a : []).map(x => Array.isArray(x) ? ({d:String(x[0] || '').slice(0, 10), c:num(x[1])}) : ({d:String(x && x.datum || '').slice(0, 10), c:num(x && x.slotkoers)}))
   .filter(x => x.d && x.c).sort((a, b) => a.d < b.d ? -1 : a.d > b.d ? 1 : 0);
 const HZ_DAYS = {'1m':30, '3m':91, '6m':182, '12m':365};
+const ACTIVE_DAYS = 45; // zo lang na de melding telt een aankoop als actief koopsignaal
 const HZ_LABEL = {m:'tot nu', '1m':'1 mnd', '3m':'3 mnd', '6m':'6 mnd', '12m':'12 mnd'};
-const SIG_ORDER = ['commissie-match', 'insider koopt ook', 'eerste insider', 'onder koers politicus', 'koop vlak voor cijfers', 'cluster kopen', 'klein bedrijf', 'groot bedrag', 'nieuwe positie', 'late melding', 'cluster gemengd'];
+const SIG_ORDER = ['commissie-match', 'insider koopt ook', 'eerste insider', 'onder koers politicus', 'koop vlak voor cijfers', 'cluster kopen', 'klein bedrijf', 'groot bedrag', 'nieuwe positie', 'cluster gemengd'];
 const sigRank = s => { const i = SIG_ORDER.findIndex(x => s.startsWith(x)); return i < 0 ? 99 : i; };
 function shortRange(s){
   const n = String(s).match(/\d[\d.,]*/g);
@@ -495,7 +496,7 @@ function buildRounds(){
       const first = buys[0];
       const r = {id:rounds.length, pid:t.pid, pol:t.pol, polName:t.polName, partij:t.partij, kamer:t.kamer, ticker:t.ticker, bedrijf:t.bedrijf, sector:t.sector, soort:t.soort,
         owner:ownerKey(t.owner), buys:buys.slice(), sale:t, partial, nBuys:buys.length, buyTx:first.tx, saleTx:t.tx, saleMel:t.mel, days:daysBetween(first.tx, t.tx),
-        rW:pct(avgOf(buys, 'pT'), t.pT), rZ:pct(avgOf(buys, 'pM'), t.pM), hadSig:buys.some(b => b.sig.length),
+        rW:pct(avgOf(buys, 'pT'), t.pT), rZ:pct(avgOf(buys, 'pM'), t.pM), hadSig:buys.some(b => b.sig.some(x => x !== 'late melding')),
         kind:partial ? 'deelverkoop' : t.saleKind === 'volledig' ? 'volledig' : 'omvang onbekend'};
       rounds.push(r);
       t.round = r;
@@ -514,13 +515,26 @@ function buildRounds(){
   const minTx = D.trades.reduce((m, t) => t.tx && (!m || t.tx < m) ? t.tx : m, null);
   const firstPT = new Map();
   D.trades.forEach(t => { if (!t.tx) return; const k = t.pid + '|' + t.ticker; if (!firstPT.has(k) || t.tx < firstPT.get(k)) firstPT.set(k, t.tx); });
+  const freshFrom = addDays(D.ref, -ACTIVE_DAYS);
   D.trades.forEach(t => {
-    if (t.type !== 'koop') { t.score = 0; return; }
-    t.active = !t.closed;
+    t.sigExpired = []; t.expiredWhy = '';
+    if (t.type !== 'koop') { t.score = 0; t.active = false; return; }
+    t.held = !t.closed;
+    t.fresh = !!t.mel && t.mel >= freshFrom;
+    t.active = t.held && t.fresh;
     t.status = t.closed ? 'verkocht ' + fmtShort(t.closed.tx) : t.partSold ? 'deels verkocht ' + fmtShort(t.partSold) : 'nog in bezit';
+    t.sig = t.sig.filter(x => x !== 'late melding');
     if (minTx && t.tx && t.tx >= addDays(minTx, 365) && firstPT.get(t.pid + '|' + t.ticker) === t.tx && !t.sig.includes('nieuwe positie')) t.sig.push('nieuwe positie');
     if (t.active && t.rT != null && t.rT < 0 && !t.sig.includes('onder koers politicus')) t.sig.push('onder koers politicus');
-    t.sig.sort((a, b) => sigRank(a) - sigRank(b));
+    const valid = [], exp = [];
+    t.sig.forEach(x => {
+      if (!t.active) exp.push(x);
+      else if (x === 'koop vlak voor cijfers' && !(t.cijfersNa && t.cijfersNa >= D.ref)) exp.push(x);
+      else valid.push(x);
+    });
+    t.sig = valid.sort((a, b) => sigRank(a) - sigRank(b));
+    t.sigExpired = exp.sort((a, b) => sigRank(a) - sigRank(b));
+    if (exp.length) t.expiredWhy = !t.held ? 'het aandeel is verkocht' : !t.fresh ? 'de melding is ouder dan ' + ACTIVE_DAYS + ' dagen' : 'de kwartaalcijfers zijn al geweest';
     t.strong = t.sig.includes('commissie-match') && (t.sig.includes('insider koopt ook') || t.sig.includes('onder koers politicus'));
     t.score = (t.strong ? 100 : 0) + t.sig.length;
   });
@@ -667,9 +681,9 @@ function renderNieuw(){
     <section style="margin-bottom:24px"><div class="sec-h"><h2>Uit je volglijst</h2><button class="linkbtn" type="button" data-tab="volglijst">Volglijst</button></div>${wHtml}</section>
     <div class="cols">
       <section class="col-main">
-        <div class="sec-h"><h2>Actieve koopsignalen <span class="small muted" style="font-weight:400">· nog in bezit, sterkste eerst (${active.length})</span></h2><button class="linkbtn" type="button" data-goto-signals>Alle in Trades</button></div>
+        <div class="sec-h"><h2>Actieve koopsignalen <span class="small muted" style="font-weight:400">· gemeld in de laatste ${ACTIVE_DAYS} dagen, nog in bezit, sterkste eerst (${active.length})</span></h2><button class="linkbtn" type="button" data-goto-signals>Alle in Trades</button></div>
         <div class="card" style="overflow:hidden">${sHtml}
-          <div class="small muted" style="padding:12px 16px"><b style="color:var(--text)">Sterk</b> = commissie-match én (insider koopt ook of onder koers politicus). Verkoopt de politicus het aandeel, dan verdwijnt het signaal hier en komt het bij “Vervallen signalen”.</div></div>
+          <div class="small muted" style="padding:12px 16px"><b style="color:var(--text)">Sterk</b> = commissie-match én (insider koopt ook of onder koers politicus). Een signaal blijft ${ACTIVE_DAYS} dagen na de melding actief. Verkoopt de politicus eerder, dan komt het bij “Vervallen signalen”.</div></div>
       </section>
       <aside class="col-side">
         <div class="card pad"><h3>Vervallen signalen</h3><p class="small muted" style="margin:2px 0 6px">De politicus heeft het aandeel verkocht</p>
@@ -970,6 +984,7 @@ function openTrade(id){
       <button class="iconbtn" type="button" data-close aria-label="Sluiten">×</button></div>
     <div class="d-b">
       ${sigs.length ? `<div class="pills">${sigs.map(s => `<span class="pill sig">${esc(s)}</span>`).join('')}</div>` : ''}
+      ${t.sigExpired && t.sigExpired.length ? `<details class="box" style="padding:10px 14px"><summary class="small" style="cursor:pointer"><b>Verlopen signalen (${t.sigExpired.length})</b> <span class="muted">· ${esc(t.expiredWhy)}</span></summary><div class="pills" style="margin-top:8px">${t.sigExpired.map(s => `<span class="pill">${esc(s === 'commissie-match' && t.cm ? 'commissie-match · ' + t.cm : s)}</span>`).join('')}</div></details>` : ''}
       <div class="kv4">
         <div><span class="xs">Werkelijk moment</span><b>${fmtDate(t.tx)}</b><span class="xs">slotkoers ${fmtMoney(t.pT)}</span></div>
         <div><span class="xs">Zichtbaar moment</span><b>${fmtDate(t.mel)}</b><span class="xs">slotkoers ${fmtMoney(t.pM)}${t.delay != null ? ' · ' + t.delay + ' d later' : ''}</span></div>
@@ -1008,14 +1023,14 @@ function openUitleg(){
     <h3>Werkelijk en zichtbaar moment</h3>
     <p><b>Werkelijk moment</b> = de transactiedatum: wanneer de politicus handelde. <b>Zichtbaar moment</b> = de meldingsdatum: wanneer jij de trade kon zien. Meldingen komen tot 45 dagen na de trade binnen (soms later). <b>Politicus</b> = koers nu tegenover de slotkoers op het werkelijke moment. <b>Jij</b> = koers nu tegenover het zichtbare moment; dat had je als volger in de praktijk kunnen halen.</p>
     <h3>Koopsignalen</h3>
-    <p>Signalen staan alleen bij aankopen. Een koopsignaal is <b>actief</b> zolang de politicus het aandeel nog heeft. Verkoopt de politicus, dan vervalt het signaal. Bij een deelverkoop blijft het actief, met het label “deels verkocht”.</p>
+    <p>Signalen staan alleen bij aankopen. Een koopsignaal is <b>actief</b> als de aankoop in de laatste 45 dagen is gemeld én de politicus het aandeel nog heeft. Bij een deelverkoop blijft het actief, met het label “deels verkocht”. Daarna verlopen de signalen: ze staan niet meer bij de trade, maar je vindt ze nog in het detailvenster onder “Verlopen signalen”. “Koop vlak voor cijfers” verloopt al eerder, zodra de cijfers zijn gepubliceerd.</p>
     <ul>
       <li><b>Commissie-match</b>: de politicus zit in een commissie die over de sector of branche van het bedrijf gaat. Grove indeling op basis van de huidige commissies; controleer zelf.</li>
       <li><b>Insider koopt ook</b>: een bestuurder, commissaris of grootaandeelhouder van het bedrijf kocht binnen 30 dagen ook (alleen gewone aankopen, geen opties of toekenningen). <b>Eerste insider-aankoop in X jaar</b>: daarvoor kochten insiders lange tijd niet.</li>
       <li><b>Onder koers politicus</b>: het aandeel staat nu lager dan op het werkelijke moment, dus je kunt goedkoper instappen dan de politicus. Een koers kan ook om een goede reden gedaald zijn; kijk naar het nieuws.</li>
       <li><b>Koop vlak voor cijfers</b>: gekocht binnen 30 dagen vóór de kwartaalcijfers.</li>
       <li><b>Cluster kopen</b>: andere politici kochten binnen 14 dagen hetzelfde aandeel (gemengd: niet allemaal kopen).</li>
-      <li><b>Klein bedrijf</b>: marktwaarde onder $2 miljard. <b>Groot bedrag</b>: ondergrens van de bandbreedte vanaf $250.001. <b>Nieuwe positie</b>: de eerste aankoop van dit aandeel door deze politicus in de data. <b>Late melding</b>: meer dan 45 dagen na de trade gemeld.</li>
+      <li><b>Klein bedrijf</b>: marktwaarde onder $2 miljard. <b>Groot bedrag</b>: ondergrens van de bandbreedte vanaf $250.001. <b>Nieuwe positie</b>: de eerste aankoop van dit aandeel door deze politicus in de data. Hoe laat een trade gemeld is, zie je in het detailvenster bij het zichtbare moment.</li>
       <li><b>Sterk</b>: commissie-match én (insider koopt ook of onder koers politicus).</li>
     </ul>
     <h3>Rondes</h3>

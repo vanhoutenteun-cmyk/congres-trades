@@ -582,10 +582,6 @@ def build():
         lb = lower_bound(t["bedrag_range"])
         if lb is not None and lb >= 250001:
             s.append("groot bedrag")
-        if t["meldingsdatum"]:
-            delay = (date.fromisoformat(t["meldingsdatum"]) - date.fromisoformat(t["transactiedatum"])).days
-            if delay > 45:
-                s.append("late melding")
         txd = date.fromisoformat(t["transactiedatum"])
         others = [o for o in by_tk[t["ticker"]] if o["politicus_id"] != t["politicus_id"]
                   and abs((date.fromisoformat(o["transactiedatum"]) - txd).days) <= 14]
